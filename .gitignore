@@ -39,6 +39,7 @@ config.json.bak
 *.env
 rss2pod.db
 rss2pod/rss2pod.db
+rss2pod/data
 
 # 数据和缓存
 *.db
