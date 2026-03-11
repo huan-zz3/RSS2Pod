@@ -1,0 +1,3 @@
+[submodule "thirdparty/python-feedgen"]
+	path = thirdparty/python-feedgen
+	url = https://github.com/lkiesow/python-feedgen.git

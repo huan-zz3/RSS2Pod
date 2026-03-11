@@ -1,0 +1,19 @@
+[
+  {
+    "source_name": "HN Buzzing",
+    "article_count": 3,
+    "summary": "The articles from HN Buzzing cover a range of topics related to technology and innovation, with a particular focus on artificial intelligence and software development. The first article discusses Mark Zuckerberg's creation of a new applied AI engineering company and the reorganization of key teams at Meta. This move underscores the company's commitment to advancing AI technology and integrating it into its products and services. The second article, 'Open Weights Training is Not Open Training', delves into the nuances of open-source AI models, specifically addressing the misconception that open weights (pre-trained model parameters) equate to open training. The author highlights the importance of transparency in the training process and the risks associated with using pre-trained models without understanding their limitations. The third article, a tweet, reveals a hidden menu in SSH (Secure Shell) that can be accessed using specific commands. This hidden menu is a lesser-known feature that can enhance the usability of SSH for developers and system administrators. Overall, the articles highlight the growing importance of AI in the tech industry, the need for transparency in AI development, and the discovery of useful features in commonly used software tools.",
+    "key_topics": [
+      "AI Engineering",
+      "Open Source AI Models",
+      "SSH Features"
+    ],
+    "highlights": [
+      "Mark Zuckerberg is creating a new applied AI engineering company and reorganizing key teams at Meta.",
+      "Open weights in AI models do not necessarily mean open training, and transparency in the training process is crucial.",
+      "A hidden SSH menu can be accessed with specific commands, enhancing its usability for developers and system administrators."
+    ],
+    "generated_at": "2023-11-15T00:00:00",
+    "source": "http://154.9.252.113:8050/hn.buzzing.cc/feed.xml"
+  }
+]

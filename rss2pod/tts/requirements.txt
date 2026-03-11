@@ -1,0 +1,19 @@
+# TTS 与音频处理模块依赖
+
+# Azure TTS
+azure-cognitiveservices-speech>=1.30.0
+
+# Edge TTS
+edge-tts>=6.1.0
+
+# 音频处理
+mutagen>=1.46.0
+
+# HTTP 客户端（ElevenLabs 等）
+aiohttp>=3.9.0
+
+# 阿里云 TTS（可选）
+# nls-python-sdk>=2.0.0
+
+# 通用工具
+python-dateutil>=2.8.0
