@@ -6,7 +6,7 @@ TTS 适配器抽象接口
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
 

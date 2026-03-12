@@ -14,7 +14,6 @@ import sys
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from typing import Optional, Dict, Any
-from datetime import datetime
 
 
 # 日志格式

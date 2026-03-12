@@ -245,8 +245,7 @@ class TTSService(BaseService):
             ServiceResult 实例，包含 audio_path, audio_duration
         """
         try:
-            from tts.siliconflow_provider import SiliconFlowClient
-            from tts.audio_assembler import AudioAssembler, AudioSegment, AudioRole, AssemblyConfig
+            from tts.audio_assembler import AudioAssembler, AudioRole, AssemblyConfig
             from tts.adapter import get_adapter_from_tts_config
             
             # 获取配置
@@ -265,7 +264,6 @@ class TTSService(BaseService):
             
             # 获取模型和适配器
             model = adapter_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
-            active_adapter = tts_config.get('active_adapter', 'moss')
             adapter = get_adapter_from_tts_config(tts_config)
             
             # 确定音色
@@ -290,7 +288,6 @@ class TTSService(BaseService):
             # 逐段合成
             segment_paths = []
             for i, seg in enumerate(segments):
-                content = seg.get('content', '')
                 speaker = seg.get('speaker', 'host')
                 
                 # 使用适配器转换
@@ -482,7 +479,7 @@ class TTSService(BaseService):
         # 否则使用标准合成
         return self.synthesize_segments_sync(segments, voice, output_dir)
     
-    def _create_audio_assembler(self) -> 'AudioAssembler':
+    def _create_audio_assembler(self):  # -> AudioAssembler (imported at runtime)
         """
         创建配置好的 AudioAssembler 实例
         
@@ -541,7 +538,7 @@ class TTSService(BaseService):
                 return adjusted_path
             else:
                 if logger:
-                    logger.warning(f"[speed] 音频调速失败，使用原始文件")
+                    logger.warning("[speed] 音频调速失败，使用原始文件")
                 return audio_path
                 
         except Exception as e:
@@ -573,8 +570,7 @@ class TTSService(BaseService):
             - audio_duration: int - 音频时长（秒）
         """
         try:
-            from tts.siliconflow_provider import SiliconFlowClient
-            from tts.audio_assembler import AudioAssembler, AudioRole
+            from tts.audio_assembler import AudioRole
             
             if logger:
                 logger.info(f"[tts] 开始分段合成，共 {len(segments)} 个段落")
@@ -582,7 +578,6 @@ class TTSService(BaseService):
             # 获取配置
             provider_config = self._get_tts_provider_config()
             adapter_config = self._get_active_adapter_config()
-            tts_config = self.config.get('tts', {})
             
             if not provider_config.get('api_key'):
                 return ServiceResult(
@@ -607,7 +602,6 @@ class TTSService(BaseService):
             segment_paths = []
             
             for i, seg in enumerate(segments):
-                content = seg.get('content', '')
                 speaker = seg.get('speaker', 'host')
                 
                 # 使用适配器转换

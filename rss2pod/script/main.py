@@ -14,8 +14,7 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from script_engine import PodcastScript, ScriptSegment, create_speaker, SpeakerRole
-from prompt_templates import create_dual_host_script_prompt, create_single_host_script_prompt
+from script_engine import PodcastScript, ScriptSegment, create_speaker
 from english_learning import EnglishLearningEnhancer, create_study_guide
 from speaker_output import output_speaker_list, ScriptAnalyzer
 
@@ -141,7 +140,7 @@ class PodcastScriptGenerator:
             speakers=speakers.copy(),
             duration_estimate=30.0
         )
-        speakers[0].add_line(f"Welcome to our podcast!")
+        speakers[0].add_line("Welcome to our podcast!")
         if len(speakers) > 1:
             speakers[1].add_line("Great to be here today!")
         segments.append(intro)

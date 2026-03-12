@@ -15,10 +15,9 @@ Pipeline Orchestrator - 管道编排器
 import os
 import sys
 import asyncio
-import json
 import hashlib
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -167,7 +166,7 @@ class PipelineOrchestrator:
                 raise Exception(f"获取文章失败：{fetch_result.error_message}")
             
             if not fetch_result.articles:
-                self.logger.info(f"[fetch] 没有新文章，跳过处理")
+                self.logger.info("[fetch] 没有新文章，跳过处理")
                 result.success = True
                 result.stages_completed = ["fetch_skipped"]
                 return result
@@ -177,7 +176,7 @@ class PipelineOrchestrator:
             self.logger.info(f"[fetch] 获取到 {len(fetch_result.articles)} 篇文章")
             
             # 阶段 2：生成源级摘要
-            self.logger.info(f"[summarize] 开始生成源级摘要")
+            self.logger.info("[summarize] 开始生成源级摘要")
             summary_result = await self._retry_on_failure(
                 lambda: self._generate_source_summaries(fetch_result.articles),
                 stage="summarize"
@@ -194,7 +193,7 @@ class PipelineOrchestrator:
             self.logger.info(f"[summarize] ✓ 源级摘要已保存: {source_summaries_path}")
             
             # 阶段 3：生成组级摘要
-            self.logger.info(f"[aggregate] 开始生成组级摘要")
+            self.logger.info("[aggregate] 开始生成组级摘要")
             group_summary_result = await self._retry_on_failure(
                 lambda: self._generate_group_summary(summary_result.summaries),
                 stage="aggregate"
@@ -207,11 +206,11 @@ class PipelineOrchestrator:
             
             group_summary_path = asset_manager.save_group_summary(group_summary_result.summary)
             stages_completed.append("aggregate")
-            self.logger.info(f"[aggregate] 组级摘要生成完成")
+            self.logger.info("[aggregate] 组级摘要生成完成")
             self.logger.info(f"[aggregate] ✓ 组级摘要已保存: {group_summary_path}")
             
             # 阶段 4：生成播客脚本
-            self.logger.info(f"[script] 开始生成播客脚本")
+            self.logger.info("[script] 开始生成播客脚本")
             script_result = await self._retry_on_failure(
                 lambda: self._generate_script(group_summary_result.summary),
                 stage="script"
@@ -238,7 +237,7 @@ class PipelineOrchestrator:
             self.logger.info(f"[script] ✓ {adapter_name.upper()} TTS 输入已保存: {tts_input_path}")
             
             # 阶段 5：TTS 音频合成
-            self.logger.info(f"[tts] 开始 TTS 音频合成")
+            self.logger.info("[tts] 开始 TTS 音频合成")
             tts_result = await self._retry_on_failure(
                 lambda: self._synthesize_audio(script_result, asset_manager, timestamp),
                 stage="tts"
@@ -259,7 +258,7 @@ class PipelineOrchestrator:
             self.logger.info(f"[tts] 音频合成完成：{tts_result.audio_path} ({audio_size} 字节)")
             
             # 阶段 6：保存 Episode
-            self.logger.info(f"[save] 开始保存 Episode")
+            self.logger.info("[save] 开始保存 Episode")
             episode_result = await self._retry_on_failure(
                 lambda: self._save_episode(tts_result, script_result, summary_result),
                 stage="save"
@@ -275,14 +274,14 @@ class PipelineOrchestrator:
             self.logger.info(f"[save] Episode 保存完成：{episode_result.episode_id}")
             
             # 阶段 7：更新 RSS Feed
-            self.logger.info(f"[feed] 开始更新 RSS Feed")
+            self.logger.info("[feed] 开始更新 RSS Feed")
             feed_result = await self._retry_on_failure(
                 lambda: self._update_feed(episode_result, tts_result),
                 stage="feed"
             )
             if feed_result.get('success'):
                 stages_completed.append("feed")
-                self.logger.info(f"[feed] RSS Feed 更新完成")
+                self.logger.info("[feed] RSS Feed 更新完成")
             
             # 更新文章状态
             await self._update_article_status(fetch_result.articles)
@@ -356,7 +355,6 @@ class PipelineOrchestrator:
                 articles_by_source[article.source].append(article)
             
             summaries = []
-            group_overrides = self.group.prompt_overrides if hasattr(self.group, 'prompt_overrides') else {}
             prompt_result = self.prompt_service.get_prompt_template(
                 "source_summarizer",
                 group_id=self.group.id

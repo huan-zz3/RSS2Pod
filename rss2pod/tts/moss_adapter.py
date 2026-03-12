@@ -10,7 +10,7 @@ MOSS-TTSD 支持双人对话，使用 [S1] 和 [S2] 标签区分说话人。
 
 import os
 import sys
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from dataclasses import dataclass, field
 
 # Add parent directory to path for imports
@@ -301,16 +301,16 @@ if __name__ == "__main__":
     result = create_moss_input(test_script)
     
     if result["success"]:
-        print(f"\nMOSS 输入:")
+        print("\nMOSS 输入:")
         print(result["moss_input"])
         
-        print(f"\n参考音色:")
+        print("\n参考音色:")
         for ref in result["references"]:
             print(f"  - {ref['audio']}")
         
         print(f"\n估算时长：{result['duration_estimate']:.1f}秒")
     else:
-        print(f"\n验证失败:")
+        print("\n验证失败:")
         for error in result["errors"]:
             print(f"  - {error}")
     

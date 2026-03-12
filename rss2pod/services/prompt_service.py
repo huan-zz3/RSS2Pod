@@ -4,7 +4,7 @@ Prompt 服务 - 封装 LLM Prompt 管理相关操作
 
 import os
 import sys
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

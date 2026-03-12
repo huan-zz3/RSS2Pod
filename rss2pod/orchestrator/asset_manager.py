@@ -429,10 +429,6 @@ class EpisodeAssetManager:
         if len(episodes) <= keep_latest:
             return
         
-        # 保留最新的 Episode
-        episodes_to_keep = episodes[:keep_latest]
-        timestamps_to_keep = {ep['episode_timestamp'] for ep in episodes_to_keep}
-        
         # 清理旧的 Episode
         for episode in episodes[keep_latest:]:
             timestamp = episode['episode_timestamp']

@@ -11,7 +11,6 @@ LLM 脚本生成器实现
 
 import os
 import sys
-import json
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,7 +18,7 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from script.script_engine import ScriptEngine, PodcastScript, ScriptSegment, Speaker, SpeakerRole
+from script.script_engine import ScriptEngine, PodcastScript, ScriptSegment, Speaker
 from llm.llm_client import LLMClient, create_llm_client
 
 
@@ -451,7 +450,7 @@ if __name__ == '__main__':
     # 生成测试脚本
     script = engine.generate_script(test_group_summary, test_group_config, episode_number=1)
     
-    print(f"\n生成结果:")
+    print("\n生成结果:")
     print(f"  标题：{script.title}")
     print(f"  期数：{script.episode_number}")
     print(f"  段落数：{len(script.segments)}")
@@ -459,7 +458,7 @@ if __name__ == '__main__':
     
     # 转换为 MOSS 格式
     moss_input = script.to_moss_format()
-    print(f"\nMOSS 格式预览:")
+    print("\nMOSS 格式预览:")
     print(f"  {moss_input[:200]}...")
     
     print("\n脚本生成器测试完成!")

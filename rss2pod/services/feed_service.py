@@ -161,7 +161,7 @@ class FeedService(BaseService):
             self._synced_groups.add(group_id)
             return True
             
-        except Exception as e:
+        except Exception:
             # 静默失败，让调用方处理
             return False
     
@@ -443,7 +443,7 @@ class FeedService(BaseService):
                     # 确保有时区信息
                     if pub_date.tzinfo is None:
                         pub_date = pub_date.replace(tzinfo=timezone.utc)
-                except:
+                except ValueError:
                     pub_date = datetime.fromisoformat(ep.created_at)
                     if pub_date.tzinfo is None:
                         pub_date = pub_date.replace(tzinfo=timezone.utc)

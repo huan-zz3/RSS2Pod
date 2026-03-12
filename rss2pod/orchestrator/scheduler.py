@@ -12,14 +12,12 @@
 
 import os
 import sys
-import time
 import signal
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
-import logging
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,7 +30,7 @@ except ImportError:
 
 from database.models import DatabaseManager, Group
 from .state_manager import StateManager, ProcessingState
-from .logging_config import setup_logging, get_logger, log_pipeline_stage
+from .logging_config import setup_logging
 # 延迟导入避免循环依赖
 # from rss2pod.services.pipeline import PipelineOrchestrator
 

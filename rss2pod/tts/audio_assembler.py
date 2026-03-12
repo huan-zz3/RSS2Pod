@@ -4,13 +4,11 @@
 支持双人对话拼接、音量统一、无断层处理。
 """
 
-import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union, Tuple, Dict, Any
 from enum import Enum
 import tempfile
-import hashlib
 
 
 class AudioRole(str, Enum):
@@ -256,7 +254,6 @@ class AudioAssembler:
     async def _normalize_volumes(self, target_db: float):
         """统一所有片段的音量"""
         import subprocess
-        import tempfile
         
         for segment in self._segments:
             # 使用 FFmpeg loudnorm 滤镜统一音量
@@ -310,8 +307,6 @@ class AudioAssembler:
         concat_inputs = "".join([f"[a{i}]" for i in range(len(self._segments))])
         
         if config.gap_between_segments_ms > 0:
-            # 添加间隔静音
-            gap_sec = config.gap_between_segments_ms / 1000.0
             # 这里简化处理，实际需要在每个片段后添加静音
             filters.append(f"{concat_inputs}concat=n={len(self._segments)}:v=0:a=1[out]")
         else:

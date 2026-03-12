@@ -14,13 +14,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import typer
 import json
 import subprocess
-from typing import Optional, List
+from typing import Optional
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
 from rich.prompt import Prompt, Confirm, IntPrompt, FloatPrompt
-from rich.text import Text
 
 # 初始化
 console = Console()
@@ -121,7 +120,7 @@ def status():
         result = fever_service.test_connection()
         
         if result.success:
-            console.print(f"   [green]✅ 连接正常[/green]")
+            console.print("   [green]✅ 连接正常[/green]")
             console.print(f"   最后刷新：{result.data.get('last_refreshed_on_time', 'unknown')}")
             console.print(f"   订阅源：{result.data.get('feeds_count', 0)} 个")
         else:
@@ -179,7 +178,7 @@ def status():
         result = stats_service.get_database_stats()
         
         if result.success:
-            console.print(f"   [green]✅ 数据库正常[/green]")
+            console.print("   [green]✅ 数据库正常[/green]")
             console.print(f"   文章：{result.data.get('total_articles', 0)}")
             console.print(f"   Group: {result.data.get('enabled_groups', 0)}")
             console.print(f"   期数：{result.data.get('total_episodes', 0)}")
@@ -206,7 +205,7 @@ def status():
             console.print(f"   [yellow]⚠️ 无法获取状态：{result.error_message}[/red]")
         scheduler_service.close()
     except ImportError:
-        console.print(f"   [yellow]⚠️  模块未导入[/yellow]")
+        console.print("   [yellow]⚠️  模块未导入[/yellow]")
     except Exception as e:
         console.print(f"   [red]❌ 错误：{e}[/red]")
     
@@ -291,7 +290,7 @@ def set(key: str = typer.Argument(..., help="配置键（点号路径，如 llm.
         return
     
     save_config(config)
-    console.print(f"[green]✅ 配置已更新[/green]")
+    console.print("[green]✅ 配置已更新[/green]")
     console.print(f"   {key} = {value[:10]}{'...' if len(value) > 10 else ''}")
 
 
@@ -327,7 +326,7 @@ def reset(key: str = typer.Argument(..., help="配置键（点号路径）")):
     set_nested_value(config, key, defaults[key])
     save_config(config)
     
-    console.print(f"[green]✅ 配置已重置[/green]")
+    console.print("[green]✅ 配置已重置[/green]")
     console.print(f"   {key} = {defaults[key]}")
 
 
@@ -407,7 +406,7 @@ def source_articles(
     """
     from datetime import datetime
     
-    console.print(f"[bold]正在获取文章...[/bold]")
+    console.print("[bold]正在获取文章...[/bold]")
     console.print(f"订阅源 ID: [green]{identifier}[/green]\n")
     
     try:
@@ -464,7 +463,7 @@ def source_articles(
         
         service.close()
         
-    except ValueError as e:
+    except ValueError:
         console.print(f"[red]❌ 无效的订阅源 ID：{identifier}[/red]")
         sys.exit(1)
     except Exception as e:
@@ -631,8 +630,8 @@ def create():
                 indices = [int(x.strip()) - 1 for x in selection.split(',')]
                 selected_sources = [sources[i]['url'] for i in indices if 0 <= i < len(sources) and sources[i].get('url')]
                 console.print(f"   已选择 [green]{len(selected_sources)}[/green] 个订阅源\n")
-            except (ValueError, IndexError) as e:
-                console.print(f"[yellow]无效选择，稍后手动添加[/yellow]\n")
+            except (ValueError, IndexError):
+                console.print("[yellow]无效选择，稍后手动添加[/yellow]\n")
     
     # 如果没有选择订阅源，允许手动输入
     if not selected_sources:
@@ -750,7 +749,7 @@ def create():
         
         if result.success:
             group_id = result.data.get('group', {}).get('id')
-            console.print(f"\n[green]✅ Group 创建成功![/green]")
+            console.print("\n[green]✅ Group 创建成功![/green]")
             console.print(f"   ID: {group_id}")
             console.print(f"\n使用 [bold]rss2pod group show {group_id}[/bold] 查看详情")
         else:
@@ -787,7 +786,7 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
             service.close()
             return
         
-        console.print(f"当前配置:")
+        console.print("当前配置:")
         console.print(f"  名称：     {group['name']}")
         console.print(f"  描述：     {group.get('description') or '-'}")
         console.print(f"  RSS 源：    {len(group['rss_sources'])} 个")
@@ -952,7 +951,7 @@ def delete(group_id: str = typer.Argument(..., help="Group ID"),
         result = service.delete_group(group_id)
         
         if result.success:
-            console.print(f"[green]✅ Group 已删除[/green]")
+            console.print("[green]✅ Group 已删除[/green]")
         else:
             console.print(f"[red]❌ 删除失败：{result.error_message}[/red]")
         
@@ -1023,7 +1022,7 @@ def test():
         result = service.test_connection()
         
         if result.success:
-            console.print(f"[green]✅ 连接成功![/green]")
+            console.print("[green]✅ 连接成功![/green]")
             console.print(f"   最后刷新：{result.data.get('last_refreshed_on_time', 'unknown')}")
             console.print(f"   订阅源：{result.data.get('feeds_count', 0)} 个")
         else:
@@ -1071,7 +1070,7 @@ def _sync_articles(limit: int = 1500):
         result = service.sync_articles(limit=limit)
         
         if result.success:
-            console.print(f"[green]✅ 同步成功![/green]")
+            console.print("[green]✅ 同步成功![/green]")
             console.print(f"   同步文章：{result.metadata.get('items_synced', 0)} 篇")
             console.print(f"   新增：{result.metadata.get('new_items', 0)} 篇")
             console.print(f"   更新：{result.metadata.get('updated_items', 0)} 篇")
@@ -1128,7 +1127,7 @@ def cache_stats():
         
         stats = result.data
         
-        console.print(f"\n[bold]📊 缓存统计[/bold]")
+        console.print("\n[bold]📊 缓存统计[/bold]")
         console.print(f"   文章总数：{stats.get('total_items', 0)}")
         console.print(f"   未读文章：{stats.get('unread_count', 0)}")
         console.print(f"   已收藏：{stats.get('saved_count', 0)}")
@@ -1143,7 +1142,7 @@ def cache_stats():
             except:
                 console.print(f"   最后同步：{last_sync}")
         else:
-            console.print(f"   最后同步：[yellow]尚未同步[/yellow]")
+            console.print("   最后同步：[yellow]尚未同步[/yellow]")
         
         service.close()
         
@@ -1413,7 +1412,7 @@ def prompt_show(
         if group_id:
             console.print(f"\n[dim]显示的是 Group '{group_id}' 的配置（可能包含覆盖）[/dim]")
         else:
-            console.print(f"\n[dim]显示的是全局默认配置[/dim]")
+            console.print("\n[dim]显示的是全局默认配置[/dim]")
         
         service.close()
         
@@ -1450,11 +1449,11 @@ def prompt_edit(
             f.write(f"# 编辑 Prompt: {name}\n")
             f.write(f"# 描述：{prompt.get('description', '')}\n")
             f.write(f"# 可用变量：{', '.join(prompt.get('variables', [])) if prompt.get('variables') else '无'}\n")
-            f.write(f"#\n")
-            f.write(f"# === SYSTEM MESSAGE ===\n")
+            f.write("#\n")
+            f.write("# === SYSTEM MESSAGE ===\n")
             f.write(prompt.get('system', '') + "\n")
-            f.write(f"\n")
-            f.write(f"# === TEMPLATE ===\n")
+            f.write("\n")
+            f.write("# === TEMPLATE ===\n")
             f.write(prompt.get('template', ''))
         
         # 尝试使用常见编辑器
@@ -1679,7 +1678,7 @@ def test():
         result = service.test_connection()
         
         if result.success:
-            console.print(f"[green]✅ 连接成功![/green]")
+            console.print("[green]✅ 连接成功![/green]")
             console.print(f"   提供商：{result.data.get('provider')}")
             console.print(f"   模型：{result.data.get('model')}")
         else:
@@ -1734,7 +1733,7 @@ def test():
         result = service.test_connection()
         
         if result.success:
-            console.print(f"[green]✅ TTS 已配置[/green]")
+            console.print("[green]✅ TTS 已配置[/green]")
             console.print(f"   提供商：{result.data.get('provider')}")
             console.print(f"   适配器：{result.data.get('adapter')}")
             console.print(f"   模型：{result.data.get('model')}")
@@ -1814,7 +1813,7 @@ def listen(
         rss2pod tts listen "你好" --voice FunAudioLLM/CosyVoice2-0.5B:alex
         rss2pod tts listen "你好" -o ./output.mp3
     """
-    console.print(f"[bold]TTS 转换[/bold]")
+    console.print("[bold]TTS 转换[/bold]")
     console.print(f"输入文本：{text[:50]}{'...' if len(text) > 50 else ''}\n")
     
     try:
@@ -1833,7 +1832,7 @@ def listen(
         
         if result.success:
             data = result.data
-            console.print(f"\n[green]✅ 转换成功![/green]")
+            console.print("\n[green]✅ 转换成功![/green]")
             console.print(f"   音频路径：{data.get('audio_path')}")
             console.print(f"   文件大小：{data.get('file_size', 0)} 字节 ({data.get('file_size_kb', 0):.2f} KB)")
             console.print(f"   预计时长：{data.get('estimated_duration', 0):.1f} 秒")
@@ -1872,7 +1871,7 @@ def stats():
             return
         
         stats = result.data
-        console.print(f"\n[bold]📊 统计信息[/bold]")
+        console.print("\n[bold]📊 统计信息[/bold]")
         console.print(f"   文章总数：{stats.get('total_articles', 0)}")
         console.print(f"   启用 Group: {stats.get('enabled_groups', 0)}")
         console.print(f"   期数总数：{stats.get('total_episodes', 0)}")
@@ -2089,13 +2088,13 @@ def run(
                     )
                     
                     if result.success:
-                        console.print(f"[green]✓ 成功[/green]")
+                        console.print("[green]✓ 成功[/green]")
                         console.print(f"  Episode: {result.data.get('episode_id')}")
                         console.print(f"  完成阶段：{', '.join(result.data.get('stages_completed', []))}")
                         console.print(f"  获取文章：{result.data.get('articles_fetched')}")
                         success_count += 1
                     else:
-                        console.print(f"[red]✗ 失败[/red]")
+                        console.print("[red]✗ 失败[/red]")
                         console.print(f"  失败阶段：{result.data.get('failed_stage')}")
                         console.print(f"  错误：{result.error_message}")
                         fail_count += 1
@@ -2335,7 +2334,7 @@ def status():
         
         # 显示状态统计
         states = data.get('states_by_status', {})
-        console.print(f"[bold]处理状态统计:[/bold]")
+        console.print("[bold]处理状态统计:[/bold]")
         for status_name, count in states.items():
             status_icon = {"idle": "⏸️", "running": "▶️", "error": "❌", "disabled": "🚫"}.get(status_name, "•")
             console.print(f"  {status_icon} {status_name}: {count}")
@@ -2402,7 +2401,7 @@ def run(group_id: str = typer.Argument(None, help="Group ID（不填则触发所
                 scheduler_service.close()
                 return
             
-            console.print(f"[green]✅ 触发成功[/green]")
+            console.print("[green]✅ 触发成功[/green]")
             console.print(f"  Group: {result.data.get('group_name')}")
             console.print(f"  Episode: {result.data.get('episode_id')}")
         else:
@@ -2415,7 +2414,7 @@ def run(group_id: str = typer.Argument(None, help="Group ID（不填则触发所
                 return
             
             results = result.data
-            console.print(f"[green]✅ 触发完成[/green]")
+            console.print("[green]✅ 触发完成[/green]")
             console.print(f"  处理 Group 数：{len(results)}")
             for r in results:
                 if r.get('success'):
@@ -2463,7 +2462,7 @@ def test_trigger(group_id: str = typer.Argument(..., help="Group ID")):
         # Cron 触发信息
         if 'cron' in data:
             cron = data.get('cron', {})
-            console.print(f"\n[bold]⏰ Cron 触发[/bold]")
+            console.print("\n[bold]⏰ Cron 触发[/bold]")
             console.print(f"  表达式：{cron.get('expression') or '未配置'}")
             
             if cron.get('expression'):
@@ -2472,7 +2471,7 @@ def test_trigger(group_id: str = typer.Argument(..., help="Group ID")):
                     console.print(f"  下次运行：{next_run}")
                 
                 if cron.get('will_trigger'):
-                    console.print(f"  状态：[green]✅ 会触发[/green]")
+                    console.print("  状态：[green]✅ 会触发[/green]")
                 else:
                     remaining = cron.get('remaining', 'N/A')
                     console.print(f"  状态：[red]❌ 不会触发 (还差 {remaining})[/red]")
@@ -2480,12 +2479,12 @@ def test_trigger(group_id: str = typer.Argument(..., help="Group ID")):
         # 数量触发信息
         if 'count' in data:
             count = data.get('count', {})
-            console.print(f"\n[bold]📊 数量触发[/bold]")
+            console.print("\n[bold]📊 数量触发[/bold]")
             console.print(f"  阈值：{count.get('threshold', 0)} 篇")
             console.print(f"  当前：{count.get('current', 0)} 篇")
             
             if count.get('will_trigger'):
-                console.print(f"  状态：[green]✅ 会触发[/green]")
+                console.print("  状态：[green]✅ 会触发[/green]")
             else:
                 remaining = count.get('remaining', 0)
                 console.print(f"  状态：[red]❌ 不会触发 (还差 {remaining} 篇)[/red]")
@@ -2557,25 +2556,25 @@ def assets_list(
             
             has_files = source_summaries or group_summary or podcast_script
             if has_files:
-                console.print(f"\n[bold]文稿文件:[/bold]")
+                console.print("\n[bold]文稿文件:[/bold]")
                 if source_summaries:
-                    console.print(f"  • source_summaries.json")
+                    console.print("  • source_summaries.json")
                 if group_summary:
-                    console.print(f"  • group_summary.json")
+                    console.print("  • group_summary.json")
                 if podcast_script:
-                    console.print(f"  • podcast_script.json")
+                    console.print("  • podcast_script.json")
             
             # 分段音频 - audio_segments 是文件路径列表
             audio_segments = assets.get('audio_segments', [])
             if audio_segments:
-                console.print(f"\n[bold]分段音频:[/bold]")
+                console.print("\n[bold]分段音频:[/bold]")
                 for seg_path in audio_segments:
                     filename = os.path.basename(seg_path)
                     file_size = os.path.getsize(seg_path) if os.path.exists(seg_path) else 0
                     size_kb = file_size / 1024
                     console.print(f"  • {filename} ({size_kb:.1f} KB)")
             else:
-                console.print(f"\n[yellow]⚠️  无分段音频（可能已清理）[/yellow]")
+                console.print("\n[yellow]⚠️  无分段音频（可能已清理）[/yellow]")
             
             console.print()
         
@@ -2620,25 +2619,25 @@ def assets_show(
         
         has_files = source_summaries or group_summary or podcast_script
         if has_files:
-            console.print(f"\n[bold]文稿文件:[/bold]")
+            console.print("\n[bold]文稿文件:[/bold]")
             if source_summaries:
-                console.print(f"  • source_summaries.json")
+                console.print("  • source_summaries.json")
             if group_summary:
-                console.print(f"  • group_summary.json")
+                console.print("  • group_summary.json")
             if podcast_script:
-                console.print(f"  • podcast_script.json")
+                console.print("  • podcast_script.json")
         
         # 分段音频 - audio_segments 是文件路径列表
         audio_segments = assets.get('audio_segments', [])
         if audio_segments:
-            console.print(f"\n[bold]分段音频:[/bold]")
+            console.print("\n[bold]分段音频:[/bold]")
             for seg_path in audio_segments:
                 filename = os.path.basename(seg_path)
                 file_size = os.path.getsize(seg_path) if os.path.exists(seg_path) else 0
                 size_kb = file_size / 1024
                 console.print(f"  • {filename} ({size_kb:.1f} KB)")
         else:
-            console.print(f"\n[yellow]⚠️  无分段音频[/yellow]")
+            console.print("\n[yellow]⚠️  无分段音频[/yellow]")
         
         console.print()
         service.close()

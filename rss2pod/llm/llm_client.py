@@ -9,7 +9,7 @@ import json
 import time
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 # 使用统一的日志配置
 def _get_logger():
@@ -120,7 +120,7 @@ class DashScopeClient(LLMClient):
                 logger.error(f"[LLM] {error_msg}")
                 raise Exception(error_msg)
                 
-        except requests.exceptions.Timeout as e:
+        except requests.exceptions.Timeout:
             logger.error(f"[LLM] 请求超时：{timeout}秒")
             raise Exception(f"LLM generation timeout: {timeout} seconds")
         except requests.exceptions.RequestException as e:
@@ -194,7 +194,7 @@ class DashScopeClient(LLMClient):
                 import json5
                 logger.debug("使用 json5 解析 JSON")
                 result = json5.loads(response_text)
-                logger.debug(f"[LLM] json5 解析成功")
+                logger.debug("[LLM] json5 解析成功")
                 return result
             except ImportError:
                 logger.debug("json5 未安装，跳过")
@@ -212,7 +212,7 @@ class DashScopeClient(LLMClient):
             
             try:
                 result = json.loads(response_text_cleaned)
-                logger.debug(f"[LLM] 替换制表符后解析成功")
+                logger.debug("[LLM] 替换制表符后解析成功")
                 return result
             except json.JSONDecodeError:
                 pass
@@ -238,7 +238,7 @@ class DashScopeClient(LLMClient):
             logger.debug(f"[LLM] 清理控制字符后的响应：{response_text[:500]}...")
             
             result = json.loads(response_text)
-            logger.debug(f"[LLM] 清理后解析成功")
+            logger.debug("[LLM] 清理后解析成功")
             return result
             
         except json.JSONDecodeError as e:

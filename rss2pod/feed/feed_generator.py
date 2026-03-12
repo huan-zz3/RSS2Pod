@@ -16,9 +16,7 @@ from feedgen.feed import FeedGenerator
 from feedgen.entry import FeedEntry
 from datetime import datetime, timezone
 import html
-from typing import Optional, Dict, Any, List
-from pathlib import Path
-import hashlib
+from typing import List
 
 
 class PodcastFeedGenerator:

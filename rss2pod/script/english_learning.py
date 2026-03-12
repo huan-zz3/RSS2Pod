@@ -13,7 +13,7 @@ Designed to work with the script engine to create educational content.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any
 from enum import Enum
 import re
 

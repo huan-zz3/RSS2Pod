@@ -12,7 +12,7 @@ These templates are designed to be used with LLM APIs to generate
 natural-sounding podcast scripts from source content.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 

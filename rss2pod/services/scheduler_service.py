@@ -5,7 +5,7 @@
 import os
 import sys
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional
 from datetime import datetime
 
 # Add parent directory to path for imports
@@ -377,7 +377,7 @@ class SchedulerService(BaseService):
                             hours, remainder = divmod(int(delta.total_seconds()), 3600)
                             minutes = remainder // 60
                             cron_remaining = f'{hours}小时{minutes}分钟'
-                except Exception as e:
+                except Exception:
                     pass
             
             result_data['cron'] = {

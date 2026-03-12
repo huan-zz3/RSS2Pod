@@ -14,12 +14,10 @@ Features:
 """
 
 import json
-import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
-import hashlib
 
 from .feed_generator import PodcastFeedGenerator, create_podcast_feed
 

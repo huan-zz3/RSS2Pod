@@ -12,9 +12,8 @@ SiliconFlow TTS 提供商实现
 import os
 import sys
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -438,7 +437,7 @@ if __name__ == '__main__':
             with open(args.output, 'wb') as f:
                 f.write(audio_data)
             
-            print(f"\n合成完成！")
+            print("\n合成完成！")
             print(f"输出文件：{args.output}")
             print(f"文件大小：{os.path.getsize(args.output)} 字节")
             

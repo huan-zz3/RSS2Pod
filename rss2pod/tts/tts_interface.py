@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
-import asyncio
 
 
 class TTSProviderType(str, Enum):

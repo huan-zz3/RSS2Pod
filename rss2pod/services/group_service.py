@@ -4,7 +4,7 @@ Group 服务 - 封装 Group 管理相关操作
 
 import os
 import sys
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 # Add parent directory to path for imports

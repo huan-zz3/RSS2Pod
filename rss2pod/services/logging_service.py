@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .base_service import BaseService, ServiceResult
 
 # 导出 setup_logging 函数供外部使用
-from orchestrator.logging_config import setup_logging
 
 
 class LoggingService(BaseService):

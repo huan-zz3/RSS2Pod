@@ -111,7 +111,7 @@ class AssetService(BaseService):
             ServiceResult 实例
         """
         try:
-            from orchestrator.asset_manager import EpisodeAssetManager, list_episode_assets
+            from orchestrator.asset_manager import EpisodeAssetManager
             
             if timestamp:
                 # 清理指定 Episode

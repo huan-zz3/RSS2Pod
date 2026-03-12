@@ -5,13 +5,12 @@ Fever API 服务 - 封装 Fever API 相关操作
 import os
 import sys
 import hashlib
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .base_service import BaseService, ServiceResult
-from fetcher.fever_cache import SyncResult
 
 
 class FeverService(BaseService):
@@ -363,11 +362,10 @@ class FeverService(BaseService):
             ServiceResult 实例，包含 articles, fetch_cursor
         """
         try:
-            import hashlib
             
             # 获取 Fever 客户端
             client = self._get_client(with_cache=True)
-            feeds = client.get_feeds()
+            client.get_feeds()
             
             # 构建 feed_map
             feed_map_result = self.get_feed_map(rss_sources)
@@ -497,7 +495,7 @@ class FeverService(BaseService):
         items: List[Dict],
         feed_map: Dict[str, int],
         group_id: str
-    ) -> List['Article']:
+    ) -> List:  # noqa: F821 - Article is imported at runtime
         """
         将 Fever API 返回的 items 转换为 Article 模型实例
         
@@ -528,7 +526,6 @@ class FeverService(BaseService):
                 continue
             
             try:
-                item_id = str(item.get('id', ''))
                 title = item.get('title', 'Untitled')
                 link = item.get('url', item.get('link', ''))
                 published = datetime.fromtimestamp(

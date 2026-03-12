@@ -5,7 +5,6 @@
 使用 FFmpeg atempo 滤镜调整音频播放速度。
 """
 
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -151,7 +150,7 @@ class AudioSpeedProcessor:
             
         except subprocess.TimeoutExpired:
             raise RuntimeError("音频调速超时")
-        except Exception as e:
+        except Exception:
             # 清理临时文件
             if output_path and Path(output_path).exists():
                 Path(output_path).unlink(missing_ok=True)
@@ -244,7 +243,7 @@ class AudioSpeedProcessor:
             
         except subprocess.TimeoutExpired:
             raise RuntimeError("音频调速超时")
-        except Exception as e:
+        except Exception:
             if output_path and Path(output_path).exists():
                 Path(output_path).unlink(missing_ok=True)
             raise

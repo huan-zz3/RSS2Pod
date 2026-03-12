@@ -7,7 +7,7 @@ Pipeline Service - Pipeline 即服务
 import os
 import sys
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 

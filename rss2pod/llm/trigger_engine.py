@@ -5,8 +5,7 @@ Trigger Engine - Time-based (cron), count-based, and LLM-judgment triggers
 
 import os
 import sys
-import json
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
@@ -513,7 +512,7 @@ if __name__ == "__main__":
     
     # Get stats
     stats = engine.get_trigger_stats()
-    print(f"\nTrigger Stats:")
+    print("\nTrigger Stats:")
     print(f"  Total: {stats['total_triggers']}")
     print(f"  Enabled: {stats['enabled_triggers']}")
     

@@ -7,7 +7,6 @@ Group Processor - Group 处理器
 import os
 import sys
 import asyncio
-from datetime import datetime
 from typing import Optional, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -16,7 +15,7 @@ from database.models import DatabaseManager
 from ..database_service import DatabaseService
 from services.pipeline.pipeline_orchestrator import PipelineOrchestrator
 from services.pipeline.models import PipelineResult
-from orchestrator.state_manager import StateManager, ProcessingState
+from orchestrator.state_manager import StateManager
 from orchestrator.logging_config import get_logger
 
 
@@ -103,7 +102,7 @@ class GroupProcessor:
         
         # 持久化状态到数据库
         state_manager.update_state(state)
-        self.logger.info(f"[state] 状态已持久化到数据库")
+        self.logger.info("[state] 状态已持久化到数据库")
         
         orchestrator.close()
         

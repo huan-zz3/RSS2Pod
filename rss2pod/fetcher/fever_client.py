@@ -5,11 +5,12 @@ Fever API Client - 用于与 Fever API 兼容的 RSS 阅读器交互
 支持本地缓存模式：读取操作从 SQLite 缓存获取，写入操作同时更新缓存和远端 API
 """
 
+from __future__ import annotations
+
 import requests
 import hashlib
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
-import json
 
 
 @dataclass

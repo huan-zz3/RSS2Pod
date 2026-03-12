@@ -4,13 +4,13 @@
 
 import os
 import sys
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .base_service import BaseService, ServiceResult
-from orchestrator.state_manager import StateManager, ProcessingState, PipelineRun
+from orchestrator.state_manager import StateManager, PipelineRun
 
 
 class StateService(BaseService):

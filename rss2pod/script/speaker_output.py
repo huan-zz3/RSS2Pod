@@ -9,10 +9,9 @@ in various formats (JSON, YAML, Markdown, CSV) for podcast scripts.
 import json
 import csv
 import io
-from typing import List, Dict, Any, Optional
-from dataclasses import asdict
+from typing import List, Dict, Any
 
-from .script_engine import Speaker, PodcastScript, ScriptSegment, SpeakerRole
+from .script_engine import Speaker, PodcastScript
 
 
 class SpeakerExporter:
@@ -56,7 +55,7 @@ class SpeakerExporter:
                 lines.append(f"  role: {speaker.role.value}")
                 lines.append(f"  tone: {speaker.tone}")
                 lines.append(f"  speaking_rate: {speaker.speaking_rate}")
-                lines.append(f"  lines:")
+                lines.append("  lines:")
                 for line in speaker.lines:
                     lines.append(f"    - \"{line}\"")
                 lines.append("")

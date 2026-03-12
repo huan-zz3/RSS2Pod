@@ -4,6 +4,8 @@ Fever API 缓存管理器 - 管理 SQLite 缓存表
 提供文章的增删改查和状态更新功能
 """
 
+from __future__ import annotations
+
 import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Set

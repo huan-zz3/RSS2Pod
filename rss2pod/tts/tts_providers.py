@@ -4,12 +4,10 @@ TTS 提供商实现
 支持多云服务：Azure, ElevenLabs, Edge TTS, 阿里云
 """
 
-import asyncio
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import tempfile
-import hashlib
 
 from .tts_interface import (
     TTSProvider,
@@ -352,12 +350,12 @@ class EdgeTTSProvider(TTSProvider):
     async def initialize(self) -> bool:
         """初始化 Edge TTS"""
         try:
-            import edge_tts
+            import importlib.util
+            if importlib.util.find_spec("edge_tts") is None:
+                print("Edge TTS not installed. Run: pip install edge-tts")
+                return False
             self._initialized = True
             return True
-        except ImportError:
-            print("Edge TTS not installed. Run: pip install edge-tts")
-            return False
         except Exception as e:
             print(f"Failed to initialize Edge TTS: {e}")
             return False
@@ -716,7 +714,7 @@ class SiliconFlowTTSProvider(TTSProvider):
                 audio = mutagen.File(str(speech_file_path))
                 if audio:
                     duration_ms = int(audio.info.length * 1000)
-            except:
+            except Exception:
                 pass
 
             return TTSResponse(

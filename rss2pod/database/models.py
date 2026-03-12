@@ -401,7 +401,6 @@ class DatabaseManager:
     def delete_group(self, group_id: str) -> bool:
         """删除 Group 及相关联的数据文件和数据库记录"""
         import shutil
-        from pathlib import Path
         
         cursor = self.conn.cursor()
         
