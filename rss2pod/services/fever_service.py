@@ -492,6 +492,154 @@ class FeverService(BaseService):
                 error_message=str(e)
             )
     
+    def _convert_items_to_articles(
+        self,
+        items: List[Dict],
+        feed_map: Dict[str, int],
+        group_id: str
+    ) -> List['Article']:
+        """
+        将 Fever API 返回的 items 转换为 Article 模型实例
+        
+        Args:
+            items: Fever API 返回的文章列表
+            feed_map: source_url -> feed_id 映射
+            group_id: Group ID
+            
+        Returns:
+            Article 实例列表
+        """
+        import html
+        import re
+        import hashlib
+        from datetime import datetime
+        from database.models import Article
+        
+        all_articles = []
+        
+        # 构建 feed_id -> source_url 的反向映射
+        fid_to_url = {fid: url for url, fid in feed_map.items()}
+        
+        for item in items:
+            feed_id = item.get('feed_id')
+            source_url = fid_to_url.get(feed_id)
+            
+            if not source_url:
+                continue
+            
+            try:
+                item_id = str(item.get('id', ''))
+                title = item.get('title', 'Untitled')
+                link = item.get('url', item.get('link', ''))
+                published = datetime.fromtimestamp(
+                    int(item.get('created_on_time', 0))
+                ).isoformat()
+                content = item.get('content', '')
+                
+                # 提取纯文本内容
+                text_content = html.unescape(content)
+                text_content = re.sub(r'<[^>]+>', '', text_content)
+                
+                # 生成 article ID
+                article_id = f"art-{hashlib.md5(f'{source_url}-{title}'.encode()).hexdigest()[:12]}"
+                
+                article = Article(
+                    id=article_id,
+                    title=title,
+                    source=source_url,
+                    source_url=source_url,
+                    link=link,
+                    published=published,
+                    content=content,
+                    text_content=text_content[:10000],
+                    status='pending',
+                    group_id=group_id
+                )
+                
+                all_articles.append(article)
+                
+            except Exception as e:
+                self.logger.error(f"转换文章失败 ({item.get('id')}): {e}")
+                continue
+        
+        return all_articles
+    
+    def fetch_articles_for_group(
+        self,
+        rss_sources: List[str],
+        group_id: str,
+        since_id: Optional[str] = None,
+        force: bool = False,
+        limit: int = 1500
+    ) -> ServiceResult:
+        """
+        获取指定 Group 的文章并转换为 Article 模型
+        
+        Args:
+            rss_sources: RSS 源 URL 列表
+            group_id: Group ID
+            since_id: 上次同步的 cursor
+            force: 是否强制获取最新文章
+            limit: 最大获取数量
+            
+        Returns:
+            ServiceResult 实例，包含:
+            - articles: List[Article] - 转换后的 Article 实例
+            - fetch_cursor: str - 下次拉取的 cursor
+            - feed_map: Dict - source_url -> feed_id 映射
+        """
+        try:
+            # 调用已有的 fetch_articles 方法获取原始 items
+            fetch_result = self.fetch_articles(
+                rss_sources=rss_sources,
+                since_id=since_id,
+                force=force,
+                limit=limit
+            )
+            
+            if not fetch_result.success:
+                return fetch_result
+            
+            raw_items = fetch_result.data.get('articles', [])
+            feed_map = fetch_result.data.get('feed_map', {})
+            fetch_cursor = fetch_result.data.get('fetch_cursor', since_id)
+            
+            if not raw_items:
+                return ServiceResult(
+                    success=True,
+                    data={
+                        'articles': [],
+                        'fetch_cursor': fetch_cursor,
+                        'feed_map': feed_map
+                    }
+                )
+            
+            # 转换为 Article 模型
+            articles = self._convert_items_to_articles(
+                items=raw_items,
+                feed_map=feed_map,
+                group_id=group_id
+            )
+            
+            return ServiceResult(
+                success=True,
+                data={
+                    'articles': articles,
+                    'fetch_cursor': fetch_cursor,
+                    'feed_map': feed_map
+                },
+                metadata={
+                    'count': len(articles),
+                    'raw_items_count': len(raw_items)
+                }
+            )
+            
+        except Exception as e:
+            return ServiceResult(
+                success=False,
+                error_message=str(e)
+            )
+    
     def close(self):
         """关闭服务，释放资源"""
         if self._client and self._client.cache_manager:

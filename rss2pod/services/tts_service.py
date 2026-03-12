@@ -482,6 +482,229 @@ class TTSService(BaseService):
         # 否则使用标准合成
         return self.synthesize_segments_sync(segments, voice, output_dir)
     
+    def _create_audio_assembler(self) -> 'AudioAssembler':
+        """
+        创建配置好的 AudioAssembler 实例
+        
+        Returns:
+            AudioAssembler 实例
+        """
+        from tts.audio_assembler import AudioAssembler, AssemblyConfig
+        
+        return AudioAssembler(config=AssemblyConfig(
+            output_format="mp3",
+            bitrate="192k",
+            sample_rate=44100,
+            channels=2,
+            gap_between_segments_ms=200,
+            normalize_volume=True,
+            target_volume_db=-16.0,
+            crossfade_ms=0
+        ))
+    
+    async def _adjust_audio_speed(
+        self,
+        audio_path: str,
+        speed: float,
+        logger=None
+    ) -> str:
+        """
+        音频调速处理
+        
+        Args:
+            audio_path: 原始音频路径
+            speed: 目标播放速度
+            logger: 可选的日志记录器
+            
+        Returns:
+            调速后的文件路径
+        """
+        if speed == 1.0:
+            return audio_path
+        
+        from tts.audio_speed import AudioSpeedProcessor
+        
+        speed_processor = AudioSpeedProcessor()
+        
+        try:
+            speed_adjusted_path = audio_path.replace('.mp3', f'_speed{speed}.mp3')
+            adjusted_path = await speed_processor.adjust_speed(
+                audio_path,
+                speed_adjusted_path,
+                speed
+            )
+            
+            if adjusted_path and os.path.exists(adjusted_path):
+                # 删除原始文件
+                if audio_path != adjusted_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+                return adjusted_path
+            else:
+                if logger:
+                    logger.warning(f"[speed] 音频调速失败，使用原始文件")
+                return audio_path
+                
+        except Exception as e:
+            if logger:
+                logger.warning(f"[speed] 音频调速异常: {e}，使用原始文件")
+            return audio_path
+    
+    async def synthesize_segments_with_asset_manager(
+        self,
+        segments: List[Dict],
+        asset_manager,
+        speed: float = 1.0,
+        logger=None
+    ) -> 'ServiceResult':
+        """
+        分段合成音频并保存到资源管理器
+        
+        完整的 TTS 流程：分段合成 -> 拼接 -> 调速
+        
+        Args:
+            segments: 段落列表，每个段落包含 speaker 和 content
+            asset_manager: AssetManager 实例，需要有 segments_dir 属性
+            speed: 播放速度 (0.5-2.0, 1.0 为正常速度)
+            logger: 可选的日志记录器
+            
+        Returns:
+            ServiceResult 实例，包含:
+            - audio_path: str - 最终音频路径
+            - audio_duration: int - 音频时长（秒）
+        """
+        try:
+            from tts.siliconflow_provider import SiliconFlowClient
+            from tts.audio_assembler import AudioAssembler, AudioRole
+            
+            if logger:
+                logger.info(f"[tts] 开始分段合成，共 {len(segments)} 个段落")
+            
+            # 获取配置
+            provider_config = self._get_tts_provider_config()
+            adapter_config = self._get_active_adapter_config()
+            tts_config = self.config.get('tts', {})
+            
+            if not provider_config.get('api_key'):
+                return ServiceResult(
+                    success=False,
+                    error_message='TTS API Key 未配置'
+                )
+            
+            # 获取客户端和适配器
+            client = self._get_client()
+            adapter = self.get_adapter()
+            model = adapter_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
+            
+            # 确定音色
+            if 'CosyVoice' in model:
+                voice = adapter_config.get('voice', 'claire')
+                voice = f"{model}:{voice}"
+            else:
+                voice_host = adapter_config.get('voice_host', 'alex')
+                voice = f"fnlp/MOSS-TTSD-v0.5:{voice_host}"
+            
+            # 逐段合成
+            segment_paths = []
+            
+            for i, seg in enumerate(segments):
+                content = seg.get('content', '')
+                speaker = seg.get('speaker', 'host')
+                
+                # 使用适配器转换
+                single_segment = [seg]
+                tts_input = adapter.convert_to_tts_input(single_segment)
+                
+                # 调用 TTS
+                audio_data = await client.synthesize(tts_input, voice=voice)
+                
+                # 保存分段音频
+                segment_path = asset_manager.save_audio_segment(i + 1, audio_data, speaker)
+                segment_paths.append((segment_path, speaker))
+            
+            if logger:
+                logger.info(f"[tts] ✓ 音频片段已保存到: {asset_manager.segments_dir}")
+                for path, speaker in segment_paths:
+                    logger.info(f"[tts]   - {os.path.basename(path)}")
+            
+            # 拼接音频
+            assembler = self._create_audio_assembler()
+            
+            await assembler.initialize()
+            if not assembler._ffmpeg_available:
+                await client.close()
+                return ServiceResult(
+                    success=False,
+                    error_message="FFmpeg 不可用，无法进行音频拼接"
+                )
+            
+            # 添加所有片段
+            for path, speaker in segment_paths:
+                role = AudioRole.HOST if speaker == 'host' else AudioRole.GUEST
+                assembler.add_segment(
+                    path=path,
+                    role=role,
+                    fade_in_ms=0,
+                    fade_out_ms=0
+                )
+            
+            # 创建最终输出路径
+            final_audio_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                'data', 'media'
+            )
+            os.makedirs(final_audio_dir, exist_ok=True)
+            
+            # 生成带速度标识的文件名
+            speed_suffix = f"_speed{speed}" if speed != 1.0 else ""
+            final_filename = f"episode_temp{speed_suffix}.mp3"
+            final_audio_path = os.path.join(final_audio_dir, final_filename)
+            
+            assembled_path = await assembler.assemble(final_audio_path)
+            
+            if not assembled_path or not os.path.exists(assembled_path):
+                await client.close()
+                return ServiceResult(
+                    success=False,
+                    error_message="音频拼接失败"
+                )
+            
+            # 计算时长
+            audio_duration = os.path.getsize(assembled_path) // 16000
+            
+            await client.close()
+            
+            # 调速处理
+            if speed != 1.0:
+                if logger:
+                    logger.info(f"[speed] 开始音频调速，目标速度: {speed}x")
+                
+                adjusted_path = await self._adjust_audio_speed(
+                    str(assembled_path),
+                    speed,
+                    logger
+                )
+                
+                if adjusted_path and os.path.exists(adjusted_path):
+                    assembled_path = adjusted_path
+                    audio_duration = int(audio_duration / speed)
+                    if logger:
+                        logger.info(f"[speed] ✓ 音频调速完成: {adjusted_path}")
+            
+            return ServiceResult(
+                success=True,
+                data={
+                    'audio_path': str(assembled_path),
+                    'audio_duration': audio_duration,
+                    'segment_count': len(segments)
+                }
+            )
+            
+        except Exception as e:
+            return ServiceResult(
+                success=False,
+                error_message=str(e)
+            )
+    
     def close(self):
         """关闭服务，释放资源"""
         if self._client:

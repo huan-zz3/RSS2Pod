@@ -8,6 +8,8 @@ Pipeline Orchestrator - 管道编排器
 4. 生成播客脚本
 5. TTS 音频合成
 6. 保存 Episode
+
+本模块严格遵循"只使用 services 封装"原则，不直接调用底层模块。
 """
 
 import os
@@ -21,20 +23,26 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from database.models import DatabaseManager, Group, Article, SourceSummary as DBSourceSummary
+# 类型导入（仅用于类型提示）
+from database.models import Group, Article, Episode, SourceSummary
+
+# 服务层导入
 from ..llm_service import LLMService
 from ..tts_service import TTSService
 from ..fever_service import FeverService
 from ..database_service import DatabaseService
 from ..asset_service import AssetService
-from rss2pod.orchestrator.state_manager import ProcessingState, StateManager
-from llm.prompt_manager import get_prompt_manager, PromptManager
-from tts.adapter import get_adapter_from_tts_config
-from tts.audio_speed import AudioSpeedProcessor
+from ..prompt_service import PromptService
+from ..state_service import StateService
 from .models import (
     FetchResult, SummaryResult, GroupSummaryResult, ScriptResult,
     TTSResult, EpisodeResult, PipelineResult
 )
+
+# 类型别名（避免循环导入）
+ProcessingState = Any
+StateManager = Any
+DatabaseManager = Any
 
 
 class PipelineOrchestrator:
@@ -94,13 +102,10 @@ class PipelineOrchestrator:
         self.llm_service = LLMService()
         self.tts_service = TTSService()
         self.asset_service = AssetService()
-        
-        # 初始化 Prompt Manager
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            'config.json'
-        )
-        self.prompt_manager = get_prompt_manager(config_path)
+        self.prompt_service = PromptService()
+        self.fever_service = FeverService(db_path=db_path)
+        self.state_service = StateService(db_path=db_path)
+        self.database_service = DatabaseService(db_path=db_path)
     
     async def _retry_on_failure(
         self,
@@ -300,152 +305,42 @@ class PipelineOrchestrator:
         return result
     
     async def _fetch_articles(self) -> FetchResult:
-        """阶段 1：获取文章"""
-        from fetcher.fever_client import FeverClient, FeverCredentials
-        
+        """阶段 1：获取文章 - 使用 FeverService 封装"""
         try:
-            config_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                'config.json'
-            )
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            fever_config = config.get('fever', {})
-            username = fever_config.get('username', '')
-            password = fever_config.get('password', '')
-            api_key = hashlib.md5(f"{username}:{password}".encode()).hexdigest()
-            
-            api_url = fever_config.get('url', '').rstrip('/')
-            credentials = FeverCredentials(api_url=api_url, api_key=api_key)
-            client = FeverClient(credentials, db_path=self.db_path)
-            
             rss_sources = self.group.rss_sources or []
             if not rss_sources:
                 return FetchResult(success=True, articles=[])
             
-            feeds = client.get_feeds()
-            feed_map = {}
-            for source_url in rss_sources:
-                feed_id = self._get_source_id_by_url_from_feeds(source_url, feeds)
-                if feed_id:
-                    feed_map[source_url] = feed_id
+            # 使用 FeverService 获取并转换文章
+            result = self.fever_service.fetch_articles_for_group(
+                rss_sources=rss_sources,
+                group_id=self.group.id,
+                since_id=self.state.last_fetch_cursor,
+                force=self.force
+            )
             
-            if not feed_map:
-                return FetchResult(success=True, articles=[])
+            if not result.success:
+                return FetchResult(
+                    success=False,
+                    error_message=result.error_message
+                )
             
-            target_feed_ids = set(feed_map.values())
-            since_id = self.state.last_fetch_cursor
+            articles = result.data.get('articles', [])
+            fetch_cursor = result.data.get('fetch_cursor', self.state.last_fetch_cursor)
             
-            if self.force:
-                self.logger.info("[fetch] --force 模式启用")
-                since_id = None
-            
-            fetch_limit = 1500 if since_id is None else 100
-            all_items = self._get_items_since(client, since_id, limit=fetch_limit)
-            
-            filtered_items = [item for item in all_items if item.get('feed_id') in target_feed_ids]
-            
-            if self.force and len(filtered_items) > 3:
-                filtered_items.sort(key=lambda x: int(x.get('created_on_time', 0)), reverse=True)
-                filtered_items = filtered_items[:3]
-            
-            all_articles = []
-            for item in filtered_items:
-                feed_id = item.get('feed_id')
-                source_url = None
-                for url, fid in feed_map.items():
-                    if fid == feed_id:
-                        source_url = url
-                        break
-                
-                if source_url:
-                    article = self._convert_item_to_article(item, source_url)
-                    if article:
-                        all_articles.append(article)
-            
-            for article in all_articles:
-                self.db.add_article(article)
-            
-            if all_articles and filtered_items:
-                max_item_id = max(int(item.get('id', 0)) for item in filtered_items)
-                new_cursor = str(max_item_id)
-            else:
-                new_cursor = since_id
+            # 将文章添加到数据库 - 使用 DatabaseService
+            for article in articles:
+                self.database_service.add_article(article)
             
             return FetchResult(
                 success=True,
-                articles=all_articles,
-                fetch_cursor=new_cursor
+                articles=articles,
+                fetch_cursor=fetch_cursor
             )
             
         except Exception as e:
             self.logger.error(f"[fetch] 获取文章失败：{e}")
             return FetchResult(success=False, error_message=str(e))
-    
-    def _get_source_id_by_url_from_feeds(self, url: str, feeds: List[Dict]) -> Optional[int]:
-        """根据 URL 从 feeds 列表获取源 ID"""
-        if feeds is None:
-            return None
-        
-        # 精确匹配
-        for feed in feeds:
-            if feed.get('url') == url:
-                return int(feed.get('id'))
-        
-        # 模糊匹配
-        import re
-        target_parts = set()
-        domain_match = re.search(r'://([^/]+)', url)
-        if domain_match:
-            target_parts.add(domain_match.group(1))
-        
-        for feed in feeds:
-            feed_url = feed.get('url', '')
-            feed_domain = re.search(r'://([^/]+)', feed_url)
-            if feed_domain and feed_domain.group(1) in target_parts:
-                return int(feed.get('id'))
-        
-        return None
-    
-    def _get_items_since(self, client, since_id: Optional[str], limit: int) -> List[Dict]:
-        """从缓存获取文章"""
-        since_id_int = int(since_id) if since_id else None
-        items = client.get_items(since_id=since_id_int, limit=limit)
-        items.sort(key=lambda x: int(x.get('id', 0)), reverse=True)
-        return items
-    
-    def _convert_item_to_article(self, item: Dict, source_url: str) -> Optional[Article]:
-        """将 Fever API item 转换为 Article"""
-        try:
-            import html
-            import re
-            
-            item_id = str(item.get('id', ''))
-            title = item.get('title', 'Untitled')
-            link = item.get('url', item.get('link', ''))
-            published = datetime.fromtimestamp(int(item.get('created_on_time', 0))).isoformat()
-            content = item.get('content', '')
-            
-            text_content = html.unescape(content)
-            text_content = re.sub(r'<[^>]+>', '', text_content)
-            
-            article_id = f"art-{hashlib.md5(f'{source_url}-{title}'.encode()).hexdigest()[:12]}"
-            
-            return Article(
-                id=article_id,
-                title=title,
-                source=source_url,
-                source_url=source_url,
-                link=link,
-                published=published,
-                content=content,
-                text_content=text_content[:10000],
-                status='pending'
-            )
-        except Exception as e:
-            self.logger.error(f"转换文章失败：{e}")
-            return None
     
     async def _generate_source_summaries(self, articles: List[Article]) -> SummaryResult:
         """阶段 2：生成源级摘要"""
@@ -458,11 +353,11 @@ class PipelineOrchestrator:
             
             summaries = []
             group_overrides = self.group.prompt_overrides if hasattr(self.group, 'prompt_overrides') else {}
-            prompt_template = self.prompt_manager.get_prompt_template(
+            prompt_result = self.prompt_service.get_prompt_template(
                 "source_summarizer",
-                group_id=self.group.id,
-                group_overrides=group_overrides
+                group_id=self.group.id
             )
+            prompt_template = prompt_result.data.get('template', '') if prompt_result.success else ''
             
             for source, source_articles in articles_by_source.items():
                 try:
@@ -499,7 +394,7 @@ class PipelineOrchestrator:
         summary_str = f"{summary['source']}-{datetime.now().isoformat()}"
         summary_id = f"sum-{hashlib.md5(summary_str.encode()).hexdigest()[:12]}"
         
-        db_summary = DBSourceSummary(
+        db_summary = SourceSummary(
             id=summary_id,
             source=summary['source'],
             summary=summary.get('summary', ''),
@@ -509,7 +404,7 @@ class PipelineOrchestrator:
             group_id=self.group.id
         )
         
-        self.db.add_source_summary(db_summary)
+        self.database_service.add_source_summary(db_summary)
     
     async def _generate_group_summary(self, source_summaries: List[Dict]) -> GroupSummaryResult:
         """阶段 3：生成组级摘要"""
@@ -528,12 +423,12 @@ class PipelineOrchestrator:
     async def _generate_script(self, group_summary: Dict) -> ScriptResult:
         """阶段 4：生成播客脚本"""
         try:
-            group_overrides = self.group.prompt_overrides if hasattr(self.group, 'prompt_overrides') else {}
-            prompt_template = self.prompt_manager.get_prompt_template(
+            # 使用 PromptService 获取 prompt template
+            prompt_result = self.prompt_service.get_prompt_template(
                 "script_generator",
-                group_id=self.group.id,
-                group_overrides=group_overrides
+                group_id=self.group.id
             )
+            prompt_template = prompt_result.data.get('template', '') if prompt_result.success else ''
             
             podcast_structure = self.group.podcast_structure or 'single'
             english_learning_mode = self.group.english_learning_mode or 'off'
@@ -545,8 +440,8 @@ class PipelineOrchestrator:
                 english_learning_mode=english_learning_mode
             )
             
-            # 转换为 TTS 输入格式
-            adapter = self._get_tts_adapter()
+            # 转换为 TTS 输入格式 - 使用 TTSService 的公共方法
+            adapter = self.tts_service.get_adapter()
             segments = script_json.get('segments', [])
             tts_input = adapter.convert_to_tts_input(segments)
             
@@ -561,19 +456,11 @@ class PipelineOrchestrator:
             return ScriptResult(success=False, error_message=str(e))
     
     def _get_tts_adapter(self):
-        """获取 TTS 适配器"""
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            'config.json'
-        )
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        tts_config = config.get('tts', {})
-        return get_adapter_from_tts_config(tts_config)
+        """获取 TTS 适配器 - 使用 TTSService 封装"""
+        return self.tts_service.get_adapter()
     
     async def _synthesize_audio(self, script_result: ScriptResult, asset_manager, timestamp: str) -> TTSResult:
-        """阶段 5：TTS 音频合成"""
+        """阶段 5：TTS 音频合成 - 使用 TTSService 封装"""
         try:
             script_json = script_result.script or {}
             segments = script_json.get('segments', [])
@@ -581,109 +468,50 @@ class PipelineOrchestrator:
             if not segments:
                 return TTSResult(success=False, error_message="播客脚本段落为空")
             
-            self.logger.info(f"[tts] 开始分段合成，共 {len(segments)} 个段落")
+            # 获取播放速度
+            audio_speed = getattr(self.group, 'audio_speed', 1.0) or 1.0
             
-            # 获取 TTS 配置
-            tts_config = self.config.get('tts', {}) if hasattr(self.config, 'get') else {}
-            adapter = self._get_tts_adapter()
+            # 使用 TTSService 进行完整的 TTS 流程：分段合成 -> 拼接 -> 调速
+            result = await self.tts_service.synthesize_segments_with_asset_manager(
+                segments=segments,
+                asset_manager=asset_manager,
+                speed=audio_speed,
+                logger=self.logger
+            )
             
-            # 逐段合成
-            segment_paths = []
-            provider_config = self.tts_service._get_tts_provider_config()
-            adapter_config = self.tts_service._get_active_adapter_config()
-            model = adapter_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
+            if not result.success:
+                return TTSResult(
+                    success=False,
+                    error_message=result.error_message
+                )
             
-            client = self.tts_service._get_client()
+            # 获取 TTS 返回的临时文件路径
+            temp_audio_path = result.data.get('audio_path')
+            audio_duration = result.data.get('audio_duration', 0)
             
-            for i, seg in enumerate(segments):
-                speaker = seg.get('speaker', 'host')
-                content = seg.get('content', '')
-                
-                single_segment = [seg]
-                tts_input = adapter.convert_to_tts_input(single_segment)
-                
-                # 确定音色
-                if 'CosyVoice' in model:
-                    voice = adapter_config.get('voice', 'claire')
-                    voice = f"{model}:{voice}"
-                else:
-                    voice_host = adapter_config.get('voice_host', 'alex')
-                    voice = f"fnlp/MOSS-TTSD-v0.5:{voice_host}"
-                
-                audio_data = await client.synthesize(tts_input, voice=voice)
-                segment_path = asset_manager.save_audio_segment(i + 1, audio_data, speaker)
-                segment_paths.append((segment_path, speaker))
+            if not temp_audio_path or not os.path.exists(temp_audio_path):
+                return TTSResult(success=False, error_message="TTS 合成结果文件不存在")
             
-            # 拼接音频
-            from tts.audio_assembler import AudioAssembler, AudioRole, AssemblyConfig
-            
-            assembler = AudioAssembler(config=AssemblyConfig(
-                output_format="mp3",
-                bitrate="192k",
-                sample_rate=44100,
-                channels=2,
-                gap_between_segments_ms=200,
-                normalize_volume=True,
-                target_volume_db=-16.0,
-                crossfade_ms=0
-            ))
-            
-            await assembler.initialize()
-            if not assembler._ffmpeg_available:
-                await client.close()
-                return TTSResult(success=False, error_message="FFmpeg 不可用")
-            
-            for path, speaker in segment_paths:
-                role = AudioRole.HOST if speaker == 'host' else AudioRole.GUEST
-                assembler.add_segment(path=path, role=role, fade_in_ms=0, fade_out_ms=0)
-            
-            # 输出音频片段保存路径
-            self.logger.info(f"[tts] ✓ 音频片段已保存到: {asset_manager.segments_dir}")
-            for path, speaker in segment_paths:
-                self.logger.info(f"[tts]   - {os.path.basename(path)}")
-            
+            # 将临时文件重命名为最终输出路径
             final_audio_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                 'data', 'media', self.group.id
             )
             os.makedirs(final_audio_dir, exist_ok=True)
-            final_audio_path = os.path.join(final_audio_dir, f"episode_{timestamp}.mp3")
             
-            assembled_path = await assembler.assemble(final_audio_path)
-            audio_duration = os.path.getsize(assembled_path) // 16000
+            # 生成最终文件名（包含 speed 标识）
+            speed_suffix = f"_speed{audio_speed}" if audio_speed != 1.0 else ""
+            final_audio_path = os.path.join(final_audio_dir, f"episode_{timestamp}{speed_suffix}.mp3")
             
-            await client.close()
-            
-            # 阶段 5.1: 音频调速处理
-            audio_speed = getattr(self.group, 'audio_speed', 1.0) or 1.0
-            if audio_speed != 1.0:
-                self.logger.info(f"[speed] 开始音频调速，目标速度: {audio_speed}x")
-                speed_processor = AudioSpeedProcessor()
-                try:
-                    # 调速后的文件路径
-                    speed_adjusted_path = str(assembled_path).replace('.mp3', f'_speed{audio_speed}.mp3')
-                    adjusted_path = await speed_processor.adjust_speed(
-                        assembled_path,
-                        speed_adjusted_path,
-                        audio_speed
-                    )
-                    
-                    if adjusted_path and os.path.exists(adjusted_path):
-                        # 删除原始未调速文件，用调速后的文件替代
-                        if assembled_path != adjusted_path:
-                            os.remove(assembled_path)
-                        assembled_path = adjusted_path
-                        audio_duration = int(audio_duration / audio_speed)  # 调整时长估算
-                        self.logger.info(f"[speed] ✓ 音频调速完成: {adjusted_path}")
-                    else:
-                        self.logger.warning(f"[speed] 音频调速失败，使用原始文件")
-                        
-                except Exception as e:
-                    self.logger.warning(f"[speed] 音频调速异常: {e}，使用原始文件")
+            # 如果临时文件路径和最终路径不同，进行重命名
+            if temp_audio_path != final_audio_path:
+                if os.path.exists(final_audio_path):
+                    os.remove(final_audio_path)
+                os.rename(temp_audio_path, final_audio_path)
             
             return TTSResult(
                 success=True,
-                audio_path=str(assembled_path),
+                audio_path=str(final_audio_path),
                 audio_duration=audio_duration
             )
             
@@ -701,7 +529,6 @@ class PipelineOrchestrator:
             script_json = script_result.script or {}
             title = script_json.get('title', f"{self.group.name} Episode {episode_number}")
             
-            from database.models import Episode
             
             episode = Episode(
                 id=episode_id,
@@ -715,7 +542,7 @@ class PipelineOrchestrator:
                 source_summaries=[s.get('source', '') for s in summary_result.summaries]
             )
             
-            if self.db.add_episode(episode):
+            if self.database_service.add_episode(episode).success:
                 self.state.last_episode_number = episode_number
                 self.state.last_run_at = datetime.now().isoformat()
                 
@@ -731,10 +558,10 @@ class PipelineOrchestrator:
             return EpisodeResult(success=False, error_message=str(e))
     
     async def _update_article_status(self, articles: List[Article]):
-        """更新文章状态为已处理"""
+        """更新文章状态为已处理 - 使用 DatabaseService"""
         for article in articles:
             try:
-                self.db.update_article_status(article.id, 'processed')
+                self.database_service.update_article_status(article.id, 'processed')
             except Exception as e:
                 self.logger.warning(f"更新文章状态失败 ({article.id}): {e}")
     
@@ -767,7 +594,8 @@ class PipelineOrchestrator:
             audio_length = os.path.getsize(audio_path) if audio_path and os.path.exists(audio_path) else 0
             audio_url = f"/media/{self.group.id}/{os.path.basename(audio_path)}" if audio_path else ""
             
-            db_episode = self.db.get_episode(episode_id)
+            db_episode_result = self.database_service.get_episode(episode_id)
+            db_episode = db_episode_result.data if db_episode_result.success else None
             title = db_episode.title if db_episode else f"Episode {episode_id}"
             
             # 构建 Episode 数据字典
