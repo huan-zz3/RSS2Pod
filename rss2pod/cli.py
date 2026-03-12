@@ -7,6 +7,7 @@ RSS2Pod 命令行调试工具
 
 # 添加父目录到路径以便导入 rss2pod 模块
 import sys
+import hashlib
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -18,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
-from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.prompt import Prompt, Confirm, IntPrompt, FloatPrompt
 from rich.text import Text
 
 # 初始化
@@ -63,7 +64,7 @@ def get_service(service_class, config_path: Optional[str] = None, db_path: Optio
 
 
 # ============== 向后兼容的便捷函数 ==============
-# 这些函数保留用于向后兼容，最终应该全部迁移到使用服务模块
+# 这些函数保留用于向后兼容，推荐使用 ConfigService
 def load_config():
     """加载配置（向后兼容函数，推荐使用 ConfigService）"""
     from rss2pod.services.config_service import load_config as _load_config
@@ -234,31 +235,6 @@ def show():
         safe_config['tts']['api_key'] = safe_config['tts']['api_key'][:10] + '...'
     
     console.print(json.dumps(safe_config, indent=2, ensure_ascii=False))
-
-
-def set_nested_value(config, path, value):
-    """设置嵌套配置值，如 llm.api_key"""
-    keys = path.split('.')
-    current = config
-    for key in keys[:-1]:
-        if key not in current:
-            return False
-        current = current[key]
-    if keys[-1] not in current:
-        return False
-    current[keys[-1]] = value
-    return True
-
-
-def get_nested_value(config, path):
-    """获取嵌套配置值"""
-    keys = path.split('.')
-    current = config
-    for key in keys:
-        if key not in current:
-            return None
-        current = current[key]
-    return current
 
 
 @config_app.command()
@@ -435,47 +411,25 @@ def source_articles(
     console.print(f"订阅源 ID: [green]{identifier}[/green]\n")
     
     try:
-        # 使用本地缓存获取文章
-        config = load_config()
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        
-        from database.models import DatabaseManager
-        db = DatabaseManager(db_path)
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
         
         feed_id = int(identifier)
         
-        if unread:
-            items = db.get_fever_cache_unread_items(feed_id=feed_id, limit=limit)
-        else:
-            # 从缓存获取指定 feed_id 的文章
-            cursor = db.conn.cursor()
-            query = 'SELECT * FROM fever_cache WHERE feed_id = ? ORDER BY id DESC LIMIT ?'
-            params = [feed_id, limit]
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            
-            from database.models import FeverCacheItem
-            items = []
-            for row in rows:
-                data = dict(row)
-                items.append(FeverCacheItem(
-                    id=data['id'],
-                    feed_id=data['feed_id'],
-                    title=data['title'],
-                    author=data.get('author', ''),
-                    html=data.get('html', ''),
-                    url=data.get('url', ''),
-                    is_read=bool(data.get('is_read', 0)),
-                    is_saved=bool(data.get('is_saved', 0)),
-                    created_on_time=data.get('created_on_time', 0),
-                    fetched_at=data.get('fetched_at', '')
-                ))
+        result = service.get_cache_articles(limit=limit, unread=unread, feed_id=feed_id)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        items = result.data.get('items', [])
         
         if not items:
             status_text = "未读" if unread else "所有"
             console.print(f"[yellow]没有找到{status_text}文章[/yellow]")
             console.print("[dim]提示：请先运行 `rss2pod fever sync` 同步文章到本地缓存[/dim]")
-            db.close()
+            service.close()
             return
         
         # 显示文章列表
@@ -489,18 +443,18 @@ def source_articles(
         table.add_column("时间", style="yellow")
         
         for item in items:
-            title = item.title[:50]
-            if len(item.title) > 50:
+            title = item.get('title', '')[:50]
+            if len(item.get('title', '')) > 50:
                 title += '...'
             
-            created_time = item.created_on_time
+            created_time = item.get('created_on_time')
             if created_time:
                 pub_time = datetime.fromtimestamp(int(created_time)).strftime('%Y-%m-%d %H:%M')
             else:
                 pub_time = '-'
             
             table.add_row(
-                str(item.id),
+                str(item.get('id')),
                 title,
                 pub_time
             )
@@ -508,7 +462,7 @@ def source_articles(
         console.print(table)
         console.print(f"\n共 {len(items)} 篇文章")
         
-        db.close()
+        service.close()
         
     except ValueError as e:
         console.print(f"[red]❌ 无效的订阅源 ID：{identifier}[/red]")
@@ -531,19 +485,22 @@ def list():
     """列出所有 Group"""
     console.print("[bold]Group 列表[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
+        result = service.list_groups()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        groups = db.get_all_groups()
+        groups = result.data
         
         if not groups:
             console.print("[yellow]没有找到 Group[/yellow]")
             console.print("使用 [bold]rss2pod group create[/bold] 创建第一个 Group")
+            service.close()
             return
         
         table = Table(box=box.ROUNDED)
@@ -555,16 +512,16 @@ def list():
         
         for group in groups:
             table.add_row(
-                group.id,
-                group.name,
-                "✅" if group.enabled else "❌",
-                f"{len(group.rss_sources)} 个",
-                group.trigger_type
+                group['id'],
+                group['name'],
+                "✅" if group['enabled'] else "❌",
+                f"{len(group['rss_sources'])} 个",
+                group['trigger_type']
             )
         
         console.print(table)
         console.print(f"\n共 {len(groups)} 个 Group")
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -574,35 +531,37 @@ def list():
 @group_app.command()
 def show(group_id: str = typer.Argument(..., help="Group ID")):
     """查看 Group 详情"""
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
+        result = service.get_group(group_id)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
-        
-        group = db.get_group(group_id)
-        
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
             return
         
-        console.print(Panel(f"[bold]{group.name}[/bold]", box=box.DOUBLE))
-        console.print(f"ID:          {group.id}")
-        console.print(f"描述：       {group.description or '-'}")
-        console.print(f"状态：       {'✅ 启用' if group.enabled else '❌ 禁用'}")
-        console.print(f"触发类型：   {group.trigger_type}")
-        cron = group.trigger_config.get('cron', '-') if group.trigger_config else '-'
+        group = result.data
+        if not group:
+            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+            service.close()
+            return
+        
+        console.print(Panel(f"[bold]{group['name']}[/bold]", box=box.DOUBLE))
+        console.print(f"ID:          {group['id']}")
+        console.print(f"描述：       {group.get('description') or '-'}")
+        console.print(f"状态：       {'✅ 启用' if group['enabled'] else '❌ 禁用'}")
+        console.print(f"触发类型：   {group['trigger_type']}")
+        cron = group.get('trigger_config', {}).get('cron', '-') if group.get('trigger_config') else '-'
         console.print(f"Cron:        {cron}")
-        console.print(f"播客结构：   {group.podcast_structure}")
-        console.print(f"英语学习：   {group.english_learning_mode}")
-        console.print(f"音频调速：   {group.audio_speed}x")
-        console.print(f"\n[bold]RSS 源 ({len(group.rss_sources)} 个):[/bold]")
-        for i, source in enumerate(group.rss_sources, 1):
+        console.print(f"播客结构：   {group['podcast_structure']}")
+        console.print(f"英语学习：   {group['english_learning_mode']}")
+        console.print(f"音频调速：   {group['audio_speed']}x")
+        console.print(f"\n[bold]RSS 源 ({len(group['rss_sources'])} 个):[/bold]")
+        for i, source in enumerate(group['rss_sources'], 1):
             console.print(f"  {i}. {source}")
         
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -628,19 +587,17 @@ def create():
         console.print("[yellow]本地没有已保存的订阅源[/yellow]")
         console.print("正在从 Fever API 同步...")
         try:
-            client = get_fever_client()
-            feeds = client.get_feeds()
+            from rss2pod.services import FeverService
+            service = get_service(FeverService)
+            result = service.sync_feeds()
             
-            sources_data = {
-                "synced_at": __import__('time').time(),
-                "sources": [
-                    {"id": str(f.get('id', '')), "title": f.get('title', ''), "url": f.get('url', '')}
-                    for f in feeds
-                ]
-            }
-            with open(sources_file, 'w', encoding='utf-8') as f:
-                json.dump(sources_data, f, indent=2, ensure_ascii=False)
-            console.print(f"[green]✅ 已同步 {len(feeds)} 个订阅源[/green]\n")
+            if result.success:
+                console.print(f"[green]✅ 已同步 {result.data.get('feeds_count', 0)} 个订阅源[/green]\n")
+            else:
+                console.print(f"[red]❌ 同步失败：{result.error_message}[/red]")
+                console.print("你可以稍后手动添加 RSS 源 URL\n")
+                sources_file = None
+            service.close()
         except Exception as e:
             console.print(f"[red]❌ 同步失败：{e}[/red]")
             console.print("你可以稍后手动添加 RSS 源 URL\n")
@@ -698,18 +655,11 @@ def create():
     console.print(f"   触发类型：[green]{trigger_type}[/green]\n")
     
     # 计算实际步骤总数
-    # 步骤1: 组名 (固定)
-    # 步骤2: 订阅源 (固定)
-    # 步骤3: 触发类型 (固定)
-    # 步骤4: Cron表达式 (仅 time/combined)
-    # 步骤5: 数量阈值 (仅 count/combined)
-    # 步骤6: 播客结构+英语学习 (固定)
     total_steps = 5  # 基础步骤
     if trigger_type in ["count", "combined"]:
         total_steps += 1  # 数量阈值
     if trigger_type in ["time", "combined"]:
-        total_steps += 1  # Cron表达式
-    # llm 类型没有 time 相关的步骤，所以还是 5 步
+        total_steps += 1  # Cron 表达式
     if trigger_type == "llm":
         total_steps = 4
     
@@ -749,9 +699,8 @@ def create():
     console.print(f"   英语学习：[green]{english_learning}[/green]\n")
     
     # 音频调速
-    from rich.prompt import FloatPrompt
     audio_speed = FloatPrompt.ask(
-        "音频调速 (0.5-2.0，1.0为正常速度)",
+        "音频调速 (0.5-2.0，1.0 为正常速度)",
         default=1.0
     )
     # 验证并规范化范围
@@ -781,33 +730,33 @@ def create():
         console.print("[yellow]已取消[/yellow]")
         return
     
-    # 创建 Group
+    # 创建 Group - 使用 GroupService
     try:
-        config = load_config()
-        from database.models import init_db, Group
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        trigger_config = {"cron": cron_expr, "threshold": count_threshold}
         
-        group_id = f"group-{len(db.get_all_groups()) + 1}"
-        new_group = Group(
-            id=group_id,
-            name=group_name,
-            description=description,
-            rss_sources=selected_sources,
-            podcast_structure=podcast_structure,
-            english_learning_mode=english_learning,
-            audio_speed=audio_speed,
-            trigger_type=trigger_type,
-            trigger_config={"cron": cron_expr, "threshold": count_threshold}
-        )
+        result = service.create_group({
+            'name': group_name,
+            'description': description,
+            'rss_sources': selected_sources,
+            'podcast_structure': podcast_structure,
+            'english_learning_mode': english_learning,
+            'audio_speed': audio_speed,
+            'trigger_type': trigger_type,
+            'trigger_config': trigger_config
+        })
         
-        db.add_group(new_group)
-        db.close()
+        if result.success:
+            group_id = result.data.get('group', {}).get('id')
+            console.print(f"\n[green]✅ Group 创建成功![/green]")
+            console.print(f"   ID: {group_id}")
+            console.print(f"\n使用 [bold]rss2pod group show {group_id}[/bold] 查看详情")
+        else:
+            console.print(f"[red]❌ 创建失败：{result.error_message}[/red]")
         
-        console.print(f"\n[green]✅ Group 创建成功![/green]")
-        console.print(f"   ID: {group_id}")
-        console.print(f"\n使用 [bold]rss2pod group show {group_id}[/bold] 查看详情")
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 创建失败：{e}[/red]")
@@ -819,42 +768,49 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
     """编辑 Group"""
     console.print(f"[bold]编辑 Group: {group_id}[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        # 获取当前 Group
+        result = service.get_group(group_id)
         
-        group = db.get_group(group_id)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        group = result.data
         
         if not group:
             console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+            service.close()
             return
         
         console.print(f"当前配置:")
-        console.print(f"  名称：     {group.name}")
-        console.print(f"  描述：     {group.description or '-'}")
-        console.print(f"  RSS 源：    {len(group.rss_sources)} 个")
-        console.print(f"  触发类型： {group.trigger_type}")
-        cron = group.trigger_config.get('cron', '-') if group.trigger_config else '-'
+        console.print(f"  名称：     {group['name']}")
+        console.print(f"  描述：     {group.get('description') or '-'}")
+        console.print(f"  RSS 源：    {len(group['rss_sources'])} 个")
+        console.print(f"  触发类型： {group['trigger_type']}")
+        cron = group.get('trigger_config', {}).get('cron', '-') if group.get('trigger_config') else '-'
         console.print(f"  Cron:      {cron}")
-        console.print(f"  播客结构： {group.podcast_structure}")
-        console.print(f"  英语学习： {group.english_learning_mode}")
-        console.print(f"  音频调速： {group.audio_speed}x")
+        console.print(f"  播客结构： {group['podcast_structure']}")
+        console.print(f"  英语学习： {group['english_learning_mode']}")
+        console.print(f"  音频调速： {group['audio_speed']}x")
         console.print()
         
         # 交互式修改
+        update_data = {}
+        
         if Confirm.ask("修改名称？", default=False):
-            group.name = Prompt.ask("新名称", default=group.name)
+            update_data['name'] = Prompt.ask("新名称", default=group['name'])
         
         if Confirm.ask("修改描述？", default=False):
-            group.description = Prompt.ask("新描述", default=group.description or "")
+            update_data['description'] = Prompt.ask("新描述", default=group.get('description') or "")
         
         if Confirm.ask("修改 RSS 源？", default=False):
             console.print("当前 RSS 源:")
-            for i, source in enumerate(group.rss_sources, 1):
+            for i, source in enumerate(group['rss_sources'], 1):
                 console.print(f"  {i}. {source}")
             
             console.print("\n输入要删除的源编号（逗号分隔），或从本地订阅源中添加")
@@ -864,7 +820,7 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
                 indices = Prompt.ask("要删除的编号")
                 try:
                     to_remove = [int(x.strip()) - 1 for x in indices.split(',')]
-                    group.rss_sources = [s for i, s in enumerate(group.rss_sources) if i not in to_remove]
+                    update_data['rss_sources'] = [s for i, s in enumerate(group['rss_sources']) if i not in to_remove]
                 except:
                     pass
             elif action == "add":
@@ -895,8 +851,10 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
                                 idx = int(selection) - 1
                                 if 0 <= idx < len(sources):
                                     url = sources[idx]['url']
-                                    if url not in group.rss_sources:
-                                        group.rss_sources.append(url)
+                                    current_sources = update_data.get('rss_sources', group['rss_sources'])
+                                    if url not in current_sources:
+                                        current_sources.append(url)
+                                        update_data['rss_sources'] = current_sources
                                         console.print(f"[green]✅ 已添加：{sources[idx]['title']}[/green]")
                                     else:
                                         console.print("[yellow]⚠️ 该源已存在[/yellow]")
@@ -906,49 +864,53 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
                                 console.print("[red]❌ 请输入数字编号[/red]")
         
         if Confirm.ask("修改触发类型？", default=False):
-            group.trigger_type = Prompt.ask(
+            update_data['trigger_type'] = Prompt.ask(
                 "新触发类型",
                 choices=["time", "count", "llm", "combined"],
-                default=group.trigger_type
+                default=group['trigger_type']
             )
         
         if Confirm.ask("修改 Cron 表达式？", default=False):
-            if not group.trigger_config:
-                group.trigger_config = {}
-            group.trigger_config['cron'] = Prompt.ask("新 Cron 表达式", default=group.trigger_config.get('cron', '0 9 * * *'))
+            current_trigger_config = group.get('trigger_config', {})
+            update_data['trigger_config'] = {
+                **current_trigger_config,
+                'cron': Prompt.ask("新 Cron 表达式", default=current_trigger_config.get('cron', '0 9 * * *'))
+            }
         
         if Confirm.ask("修改播客结构？", default=False):
-            group.podcast_structure = Prompt.ask(
+            update_data['podcast_structure'] = Prompt.ask(
                 "新播客结构",
                 choices=["single", "dual"],
-                default=group.podcast_structure
+                default=group['podcast_structure']
             )
         
         if Confirm.ask("修改英语学习？", default=False):
-            group.english_learning_mode = Prompt.ask(
+            update_data['english_learning_mode'] = Prompt.ask(
                 "新英语学习设置",
                 choices=["off", "vocab", "translation"],
-                default=group.english_learning_mode
+                default=group['english_learning_mode']
             )
         
         if Confirm.ask("修改音频调速？", default=False):
-            from rich.prompt import FloatPrompt
             audio_speed = FloatPrompt.ask(
-                "音频调速 (0.5-2.0，1.0为正常速度)",
-                default=group.audio_speed
+                "音频调速 (0.5-2.0，1.0 为正常速度)",
+                default=group['audio_speed']
             )
             # 验证并规范化范围
             audio_speed = max(0.5, min(2.0, audio_speed))
-            group.audio_speed = audio_speed
+            update_data['audio_speed'] = audio_speed
         
         # 保存
         if Confirm.ask("\n保存修改？", default=True):
-            db.update_group(group)
-            console.print("[green]✅ 已保存[/green]")
+            result = service.update_group(group_id, update_data)
+            if result.success:
+                console.print("[green]✅ 已保存[/green]")
+            else:
+                console.print(f"[red]❌ 保存失败：{result.error_message}[/red]")
         else:
             console.print("[yellow]已取消修改[/yellow]")
         
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -959,32 +921,42 @@ def edit(group_id: str = typer.Argument(..., help="Group ID")):
 def delete(group_id: str = typer.Argument(..., help="Group ID"), 
            force: bool = typer.Option(False, "--force", "-f", help="强制删除，不确认")):
     """删除 Group"""
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        # 获取 Group 信息用于确认
+        result = service.get_group(group_id)
         
-        group = db.get_group(group_id)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        group = result.data
         
         if not group:
             console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+            service.close()
             return
         
         if not force:
-            console.print(f"[bold]确认删除 Group: {group.name}?[/bold]")
+            console.print(f"[bold]确认删除 Group: {group['name']}?[/bold]")
             console.print(f"  ID: {group_id}")
-            console.print(f"  RSS 源：{len(group.rss_sources)} 个")
+            console.print(f"  RSS 源：{len(group['rss_sources'])} 个")
             if not Confirm.ask("\n此操作不可逆，确认删除？"):
                 console.print("[yellow]已取消[/yellow]")
+                service.close()
                 return
         
-        db.delete_group(group_id)
-        console.print(f"[green]✅ Group 已删除[/green]")
+        result = service.delete_group(group_id)
         
-        db.close()
+        if result.success:
+            console.print(f"[green]✅ Group 已删除[/green]")
+        else:
+            console.print(f"[red]❌ 删除失败：{result.error_message}[/red]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -994,25 +966,19 @@ def delete(group_id: str = typer.Argument(..., help="Group ID"),
 @group_app.command()
 def enable(group_id: str = typer.Argument(..., help="Group ID")):
     """启用 Group"""
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        result = service.enable_group(group_id)
         
-        group = db.get_group(group_id)
+        if result.success:
+            group = result.data
+            console.print(f"[green]✅ Group '{group.get('name', group_id)}' 已启用[/green]")
+        else:
+            console.print(f"[red]❌ 启用失败：{result.error_message}[/red]")
         
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            return
-        
-        group.enabled = True
-        db.update_group(group)
-        console.print(f"[green]✅ Group '{group.name}' 已启用[/green]")
-        
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1022,38 +988,23 @@ def enable(group_id: str = typer.Argument(..., help="Group ID")):
 @group_app.command()
 def disable(group_id: str = typer.Argument(..., help="Group ID")):
     """禁用 Group"""
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        result = service.disable_group(group_id)
         
-        group = db.get_group(group_id)
+        if result.success:
+            group = result.data
+            console.print(f"[green]✅ Group '{group.get('name', group_id)}' 已禁用[/green]")
+        else:
+            console.print(f"[red]❌ 禁用失败：{result.error_message}[/red]")
         
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            return
-        
-        group.enabled = False
-        db.update_group(group)
-        console.print(f"[green]✅ Group '{group.name}' 已禁用[/green]")
-        
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
-
-
-def get_fever_client():
-    """获取 Fever API 客户端（使用 FeverService）"""
-    from rss2pod.services import FeverService
-    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-    db_path = os.path.join(os.path.dirname(__file__), 'rss2pod.db')
-    service = FeverService(config_path=config_path, db_path=db_path)
-    return service._get_client(with_cache=True)
 
 
 # ============== fever 命令组 ==============
@@ -1067,19 +1018,20 @@ def test():
     console.print("[bold]测试 Fever API 连接...[/bold]")
 
     try:
-        client = get_fever_client()
-
-        if client.test_auth():
-            info = client._make_request({})
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
+        result = service.test_connection()
+        
+        if result.success:
             console.print(f"[green]✅ 连接成功![/green]")
-            console.print(f"   最后刷新：{info.get('last_refreshed_on_time', 'unknown')}")
-
-            if get_verbose():
-                feeds = client.get_feeds()
-                console.print(f"   订阅源：{len(feeds)} 个")
+            console.print(f"   最后刷新：{result.data.get('last_refreshed_on_time', 'unknown')}")
+            console.print(f"   订阅源：{result.data.get('feeds_count', 0)} 个")
         else:
-            console.print(f"[red]❌ 认证失败[/red]")
+            console.print(f"[red]❌ 认证失败：{result.error_message}[/red]")
+            service.close()
             sys.exit(1)
+        
+        service.close()
 
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1091,28 +1043,18 @@ def _sync_feeds():
     console.print("[bold]正在从 Fever API 同步订阅源...[/bold]\n")
 
     try:
-        client = get_fever_client()
-        feeds = client.get_feeds()
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
+        result = service.sync_feeds()
         
-        # 保存订阅源到本地
-        sources_file = os.path.join(os.path.dirname(__file__), 'sources.json')
-        sources_data = {
-            "synced_at": __import__('time').time(),
-            "sources": [
-                {
-                    "id": str(feed.get('id', '')),
-                    "title": feed.get('title', 'Unknown'),
-                    "url": feed.get('url', '')
-                }
-                for feed in feeds
-            ]
-        }
+        if result.success:
+            console.print(f"[green]✅ 已同步 {result.data.get('feeds_count', 0)} 个订阅源[/green]")
+            console.print(f"   保存位置：{os.path.join(os.path.dirname(__file__), 'sources.json')}")
+        else:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            sys.exit(1)
         
-        with open(sources_file, 'w', encoding='utf-8') as f:
-            json.dump(sources_data, f, indent=2, ensure_ascii=False)
-        
-        console.print(f"[green]✅ 已同步 {len(feeds)} 个订阅源[/green]")
-        console.print(f"   保存位置：{sources_file}")
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1123,22 +1065,21 @@ def _sync_articles(limit: int = 1500):
     """同步文章到缓存"""
     console.print(f"[bold]同步 Fever API 文章到本地缓存 (限制：{limit})...[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from services.pipeline.group_processor import sync_fever_cache
-        
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        result = sync_fever_cache(db_path=db_path, limit=limit)
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
+        result = service.sync_articles(limit=limit)
         
         if result.success:
             console.print(f"[green]✅ 同步成功![/green]")
-            console.print(f"   同步文章：{result.items_synced} 篇")
-            console.print(f"   新增：{result.new_items} 篇")
-            console.print(f"   更新：{result.updated_items} 篇")
+            console.print(f"   同步文章：{result.metadata.get('items_synced', 0)} 篇")
+            console.print(f"   新增：{result.metadata.get('new_items', 0)} 篇")
+            console.print(f"   更新：{result.metadata.get('updated_items', 0)} 篇")
         else:
             console.print(f"[red]❌ 同步失败：{result.error_message}[/red]")
             sys.exit(1)
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1175,17 +1116,17 @@ def cache_stats():
     """显示 Fever 缓存统计信息"""
     console.print(Panel("[bold blue]Fever 缓存统计[/bold blue]", box=box.DOUBLE))
     
-    config = load_config()
-    
     try:
-        from services.pipeline.group_processor import get_fever_cache_stats
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
+        result = service.get_cache_stats()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        stats = get_fever_cache_stats(db_path)
-        
-        if 'error' in stats:
-            console.print(f"[red]❌ 错误：{stats['error']}[/red]")
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
             return
+        
+        stats = result.data
         
         console.print(f"\n[bold]📊 缓存统计[/bold]")
         console.print(f"   文章总数：{stats.get('total_items', 0)}")
@@ -1204,6 +1145,8 @@ def cache_stats():
         else:
             console.print(f"   最后同步：[yellow]尚未同步[/yellow]")
         
+        service.close()
+        
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1218,26 +1161,26 @@ def cache_articles(
     status_text = "未读" if unread else "所有"
     console.print(f"[bold]从缓存获取{status_text}文章 (限制：{limit})...[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import DatabaseManager
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = DatabaseManager(db_path)
+        result = service.get_cache_articles(limit=limit, unread=unread)
         
-        if unread:
-            items = db.get_fever_cache_unread_items(limit=limit)
-        else:
-            items = db.get_fever_cache_items(limit=limit)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        items = result.data
         
         if not items:
-            all_items = db.get_fever_cache_items(limit=1)
-            if not all_items:
+            all_items_result = service.get_cache_articles(limit=1)
+            if not all_items_result.success or not all_items_result.data:
                 console.print("[yellow]缓存中没有文章，请先运行：rss2pod fever sync-all[/yellow]")
             else:
                 console.print(f"[yellow]缓存中有文章，但没有{status_text}文章[/yellow]")
-            db.close()
+            service.close()
             return
         
         table = Table(
@@ -1251,23 +1194,23 @@ def cache_articles(
         table.add_column("状态", style="magenta")
         
         for item in items:
-            title = item.title[:60] if len(item.title) > 60 else item.title
+            title = item.get('title', '')[:60] if len(item.get('title', '')) > 60 else item.get('title', '')
             
-            read_icon = "✓" if item.is_read else "○"
-            saved_icon = "★" if item.is_saved else " "
+            read_icon = "✓" if item.get('is_read', False) else "○"
+            saved_icon = "★" if item.get('is_saved', False) else " "
             status = f"{read_icon}{saved_icon}"
             
             table.add_row(
-                str(item.id),
+                str(item.get('id', '')),
                 title,
-                item.author[:20] if item.author else '-',
+                item.get('author', '-')[:20] if item.get('author') else '-',
                 status
             )
         
         console.print(table)
         console.print("\n[dim]状态说明：✓ 已读 ○ 未读 | ★ 已收藏[/dim]")
         
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1278,45 +1221,34 @@ def cache_articles(
 def cache_feeds():
     """从缓存获取订阅源列表"""
     console.print("[bold]从缓存获取订阅源列表...[/bold]\n")
-    
-    config = load_config()
-    
+
     try:
-        from database.models import DatabaseManager
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
+        result = service.get_cache_feeds()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = DatabaseManager(db_path)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        # 从 fever_cache 表获取唯一的 feed_id
-        cursor = db.conn.cursor()
-        cursor.execute('SELECT DISTINCT feed_id FROM fever_cache ORDER BY feed_id')
-        feed_ids = [row[0] for row in cursor.fetchall()]
-        
-        # 尝试从 sources.json 获取订阅源名称
-        sources_file = os.path.join(os.path.dirname(__file__), 'sources.json')
-        sources_map = {}
-        if os.path.exists(sources_file):
-            with open(sources_file, 'r', encoding='utf-8') as f:
-                sources_data = json.load(f)
-                for source in sources_data.get('sources', []):
-                    sources_map[str(source.get('id', ''))] = source.get('title', 'Unknown')
+        feeds = result.data
         
         table = Table(
-            title=f"订阅源缓存列表 (共 {len(feed_ids)} 个有文章的订阅源)",
+            title=f"订阅源缓存列表 (共 {len(feeds)} 个有文章的订阅源)",
             box=box.ROUNDED
         )
         table.add_column("Feed ID", style="cyan")
         table.add_column("名称", style="green")
-        
-        for feed_id in feed_ids:
-            name = sources_map.get(str(feed_id), '(未知)')
-            table.add_row(str(feed_id), name)
-        
+
+        for feed in feeds:
+            table.add_row(str(feed.get('feed_id', '')), feed.get('name', '(未知)'))
+
         console.print(table)
-        console.print(f"\n共 {len(feed_ids)} 个订阅源有缓存文章")
+        console.print(f"\n共 {len(feeds)} 个订阅源有缓存文章")
         
-        db.close()
-        
+        service.close()
+
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1328,31 +1260,21 @@ def mark_read(
 ):
     """标记文章为已读"""
     console.print(f"[bold]标记文章为已读：{item_ids}[/bold]\n")
-    
+
     try:
-        config = load_config()
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        
-        from fetcher.fever_client import FeverClient, FeverCredentials
-        
-        api_key = hashlib.md5(
-            f"{config['fever']['username']}:{config['fever']['password']}".encode()
-        ).hexdigest()
-        
-        credentials = FeverCredentials(
-            api_url=config['fever']['url'],
-            api_key=api_key
-        )
-        client = FeverClient(credentials, db_path=db_path)
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
         
         ids = [int(x.strip()) for x in item_ids.split(',')]
-        result = client.mark_as_read(ids)
-        
-        if result:
+        result = service.mark_as_read(ids)
+
+        if result.success:
             console.print(f"[green]✅ 已标记 {len(ids)} 篇文章为已读[/green]")
         else:
-            console.print("[red]❌ 操作失败[/red]")
+            console.print(f"[red]❌ 操作失败：{result.error_message}[/red]")
         
+        service.close()
+
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1364,30 +1286,20 @@ def mark_saved(
 ):
     """收藏文章"""
     console.print(f"[bold]收藏文章：{item_id}[/bold]\n")
-    
+
     try:
-        config = load_config()
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
         
-        from fetcher.fever_client import FeverClient, FeverCredentials
-        
-        api_key = hashlib.md5(
-            f"{config['fever']['username']}:{config['fever']['password']}".encode()
-        ).hexdigest()
-        
-        credentials = FeverCredentials(
-            api_url=config['fever']['url'],
-            api_key=api_key
-        )
-        client = FeverClient(credentials, db_path=db_path)
-        
-        result = client.save_item(item_id)
-        
-        if result:
+        result = service.mark_as_saved(item_id)
+
+        if result.success:
             console.print(f"[green]✅ 已收藏文章 {item_id}[/green]")
         else:
-            console.print("[red]❌ 操作失败[/red]")
+            console.print(f"[red]❌ 操作失败：{result.error_message}[/red]")
         
+        service.close()
+
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1400,27 +1312,20 @@ def mark_unread(
     """标记文章为未读"""
     console.print(f"[bold]标记文章为未读：{item_ids}[/bold]\n")
     
-    # 注意：Fever API 不直接支持标记为未读
-    # 这里只更新本地缓存
     try:
-        config = load_config()
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        
-        from database.models import DatabaseManager
-        db = DatabaseManager(db_path)
+        from rss2pod.services import FeverService
+        service = get_service(FeverService)
         
         ids = [int(x.strip()) for x in item_ids.split(',')]
+        result = service.mark_as_unread(ids)
+
+        if result.success:
+            console.print(f"[green]✅ 已标记 {len(ids)} 篇文章为未读[/green]")
+        else:
+            console.print(f"[red]❌ 操作失败：{result.error_message}[/red]")
         
-        # 只更新本地缓存
-        cursor = db.conn.cursor()
-        placeholders = ','.join('?' * len(ids))
-        cursor.execute(f'UPDATE fever_cache SET is_read = 0 WHERE id IN ({placeholders})', ids)
-        db.conn.commit()
-        
-        console.print(f"[green]✅ 已标记 {len(ids)} 篇文章为未读（仅本地缓存）[/green]")
-        
-        db.close()
-        
+        service.close()
+
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1437,16 +1342,16 @@ def prompt_list():
     console.print(Panel("[bold blue]可用 Prompts 列表[/bold blue]", box=box.DOUBLE))
     
     try:
-        # Add parent directory to path for imports
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if parent_dir not in sys.path:
-            sys.path.insert(0, parent_dir)
-        from llm.prompt_manager import get_prompt_manager
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
+        result = service.list_prompts()
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        manager = get_prompt_manager(config_path)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        prompts = manager.list_prompts()
+        prompts = result.data.get('prompts', [])
         
         table = Table(box=box.ROUNDED)
         table.add_column("Prompt 名称", style="cyan")
@@ -1454,10 +1359,10 @@ def prompt_list():
         table.add_column("变量", style="yellow")
         
         for prompt in prompts:
-            variables = ", ".join(prompt.variables) if prompt.variables else "-"
+            variables = ", ".join(prompt.get('variables', [])) if prompt.get('variables') else "-"
             table.add_row(
-                prompt.name,
-                prompt.description,
+                prompt.get('name', ''),
+                prompt.get('description', ''),
                 variables
             )
         
@@ -1465,6 +1370,8 @@ def prompt_list():
         console.print(f"\n共 {len(prompts)} 个 prompts")
         console.print("\n[dim]提示：使用 `rss2pod prompt show <prompt_name>` 查看详细内容[/dim]")
         console.print("[dim]      使用 `rss2pod prompt edit <prompt_name>` 编辑 prompt[/dim]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1480,38 +1387,35 @@ def prompt_show(
     console.print(f"[bold]查看 Prompt: {name}[/bold]\n")
     
     try:
-        from llm.prompt_manager import get_prompt_manager
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        manager = get_prompt_manager(config_path)
+        # 获取 prompt 配置
+        result = service.get_prompt(name, group_id=group_id)
         
-        # 获取组别覆盖（如果指定）
-        group_overrides = None
-        if group_id:
-            from database.models import init_db
-            db_path = os.path.join(os.path.dirname(__file__), config_path)
-            db = init_db(db_path.replace('config.json', 'rss2pod.db'))
-            group = db.get_group(group_id)
-            if group:
-                group_overrides = {'prompt_overrides': group.prompt_overrides}
-                db.close()
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        prompt = manager.get_prompt(name, group_id=group_id, group_overrides=group_overrides)
+        prompt = result.data
         
-        console.print(f"[bold]名称:[/bold] {prompt.name}")
-        console.print(f"[bold]描述:[/bold] {prompt.description}")
-        console.print(f"[bold]可用变量:[/bold] {', '.join(prompt.variables) if prompt.variables else '无'}\n")
+        console.print(f"[bold]名称:[/bold] {prompt.get('name', name)}")
+        console.print(f"[bold]描述:[/bold] {prompt.get('description', '')}")
+        console.print(f"[bold]可用变量:[/bold] {', '.join(prompt.get('variables', [])) if prompt.get('variables') else '无'}\n")
         
         console.print(Panel("[bold]System Message[/bold]", box=box.ROUNDED))
-        console.print(prompt.system or "(无)")
+        console.print(prompt.get('system', '') or "(无)")
         
         console.print(Panel("[bold]Template[/bold]", box=box.ROUNDED))
-        console.print(prompt.template or "(无)")
+        console.print(prompt.get('template', '') or "(无)")
         
         if group_id:
             console.print(f"\n[dim]显示的是 Group '{group_id}' 的配置（可能包含覆盖）[/dim]")
         else:
             console.print(f"\n[dim]显示的是全局默认配置[/dim]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1526,26 +1430,32 @@ def prompt_edit(
     console.print(f"[bold]编辑 Prompt: {name}[/bold]\n")
     
     try:
-        from llm.prompt_manager import get_prompt_manager, PromptConfig
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        manager = get_prompt_manager(config_path)
+        # 获取当前 prompt
+        result = service.get_prompt(name)
         
-        prompt = manager.get_prompt(name)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        prompt = result.data
         
         # 创建临时文件
         import tempfile
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
             temp_path = f.name
             f.write(f"# 编辑 Prompt: {name}\n")
-            f.write(f"# 描述：{prompt.description}\n")
-            f.write(f"# 可用变量：{', '.join(prompt.variables) if prompt.variables else '无'}\n")
+            f.write(f"# 描述：{prompt.get('description', '')}\n")
+            f.write(f"# 可用变量：{', '.join(prompt.get('variables', [])) if prompt.get('variables') else '无'}\n")
             f.write(f"#\n")
             f.write(f"# === SYSTEM MESSAGE ===\n")
-            f.write(prompt.system + "\n")
+            f.write(prompt.get('system', '') + "\n")
             f.write(f"\n")
             f.write(f"# === TEMPLATE ===\n")
-            f.write(prompt.template)
+            f.write(prompt.get('template', ''))
         
         # 尝试使用常见编辑器
         editors = ['nano', 'vim', 'vi', 'code', 'notepad']
@@ -1587,22 +1497,24 @@ def prompt_edit(
                 template_text = '\n'.join(template_lines).strip()
                 
                 # 更新 prompt
-                new_prompt = PromptConfig(
-                    name=name,
-                    description=prompt.description,
-                    system=system_text,
-                    template=template_text,
-                    variables=prompt.variables
-                )
-                manager.set_global_prompt(name, new_prompt)
+                new_prompt_config = {
+                    'name': name,
+                    'description': prompt.get('description', ''),
+                    'system': system_text,
+                    'template': template_text,
+                    'variables': prompt.get('variables', [])
+                }
                 
                 # 保存配置
-                if manager.save_to_config(config_path):
+                result = service.set_global_prompt(name, new_prompt_config)
+                
+                if result.success:
                     console.print("[green]✅ Prompt 已保存[/green]")
                 else:
-                    console.print("[red]❌ 保存失败[/red]")
+                    console.print(f"[red]❌ 保存失败：{result.error_message}[/red]")
                 
                 os.unlink(temp_path)
+                service.close()
                 return
                 
             except FileNotFoundError:
@@ -1610,6 +1522,7 @@ def prompt_edit(
         
         console.print("[red]❌ 未找到可用的编辑器[/red]")
         os.unlink(temp_path)
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1627,50 +1540,43 @@ def prompt_set(
     console.print(f"[bold]为 Group '{group_id}' 设置 Prompt 覆盖：{name}[/bold]\n")
     
     try:
-        from llm.prompt_manager import get_prompt_manager, PromptConfig
-        from database.models import init_db
-        
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        db_path = os.path.join(os.path.dirname(__file__), 'rss2pod.db')
-        
-        db = init_db(db_path)
-        group = db.get_group(group_id)
-        
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            db.close()
-            return
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
         # 获取当前 prompt
-        manager = get_prompt_manager(config_path)
-        current_prompt = manager.get_prompt(name)
+        result = service.get_prompt(name)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        current_prompt = result.data
         
         # 创建新的覆盖配置
-        new_prompt = PromptConfig(
-            name=name,
-            description=current_prompt.description,
-            system=system if system is not None else current_prompt.system,
-            template=content if content is not None else current_prompt.template,
-            variables=current_prompt.variables
-        )
+        new_prompt_config = {
+            'name': name,
+            'description': current_prompt.get('description', ''),
+            'system': system if system is not None else current_prompt.get('system', ''),
+            'template': content if content is not None else current_prompt.get('template', ''),
+            'variables': current_prompt.get('variables', [])
+        }
         
-        # 更新组别覆盖
-        if 'prompt_overrides' not in group.prompt_overrides:
-            group.prompt_overrides['prompt_overrides'] = {}
+        # 设置组别覆盖
+        result = service.set_group_override(group_id, name, new_prompt_config)
         
-        group.prompt_overrides['prompt_overrides'][name] = new_prompt.to_dict()
+        if result.success:
+            console.print("[green]✅ Prompt 覆盖已保存[/green]")
+            console.print(f"   Group: {group_id}")
+            console.print(f"   Prompt: {name}")
+            if system:
+                console.print(f"   System: {system[:50]}...")
+            if content:
+                console.print(f"   Template: {content[:50]}...")
+        else:
+            console.print(f"[red]❌ 保存失败：{result.error_message}[/red]")
         
-        # 保存
-        db.update_group(group)
-        db.close()
-        
-        console.print("[green]✅ Prompt 覆盖已保存[/green]")
-        console.print(f"   Group: {group_id}")
-        console.print(f"   Prompt: {name}")
-        if system:
-            console.print(f"   System: {system[:50]}...")
-        if content:
-            console.print(f"   Template: {content[:50]}...")
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1686,31 +1592,19 @@ def prompt_reset(
     console.print(f"[bold]重置 Group '{group_id}' 的 Prompt: {name}[/bold]\n")
     
     try:
-        from database.models import init_db
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        db_path = os.path.join(os.path.dirname(__file__), 'rss2pod.db')
+        result = service.reset_group_override(group_id, name)
         
-        db = init_db(db_path)
-        group = db.get_group(group_id)
+        if result.success:
+            console.print("[green]✅ Prompt 已重置为默认值[/green]")
+            console.print(f"   Group: {group_id}")
+            console.print(f"   Prompt: {name}")
+        else:
+            console.print(f"[red]❌ 重置失败：{result.error_message}[/red]")
         
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            db.close()
-            return
-        
-        # 移除覆盖配置
-        if 'prompt_overrides' in group.prompt_overrides.get('prompt_overrides', {}):
-            if name in group.prompt_overrides['prompt_overrides']:
-                del group.prompt_overrides['prompt_overrides'][name]
-        
-        # 保存
-        db.update_group(group)
-        db.close()
-        
-        console.print("[green]✅ Prompt 已重置为默认值[/green]")
-        console.print(f"   Group: {group_id}")
-        console.print(f"   Prompt: {name}")
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1725,16 +1619,18 @@ def prompt_export(
     console.print(f"[bold]导出 Prompts 到：{filepath}[/bold]\n")
     
     try:
-        from llm.prompt_manager import get_prompt_manager
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        manager = get_prompt_manager(config_path)
+        result = service.export_prompts(filepath)
         
-        if manager.export_prompts(filepath):
+        if result.success:
             console.print("[green]✅ Prompts 已导出[/green]")
             console.print(f"   文件：{filepath}")
         else:
-            console.print("[red]❌ 导出失败[/red]")
+            console.print(f"[red]❌ 导出失败：{result.error_message}[/red]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1750,18 +1646,17 @@ def prompt_import(
     console.print(f"[bold]从文件导入 Prompts: {filepath}[/bold]\n")
     
     try:
-        from llm.prompt_manager import get_prompt_manager
+        from rss2pod.services import PromptService
+        service = get_service(PromptService)
         
-        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-        manager = get_prompt_manager(config_path)
+        result = service.import_prompts(filepath, merge=merge)
         
-        if manager.import_prompts(filepath, merge=merge):
-            if manager.save_to_config(config_path):
-                console.print("[green]✅ Prompts 已导入并保存[/green]")
-            else:
-                console.print("[yellow]⚠️ Prompts 已导入但保存失败[/yellow]")
+        if result.success:
+            console.print("[green]✅ Prompts 已导入[/green]")
         else:
-            console.print("[red]❌ 导入失败[/red]")
+            console.print(f"[red]❌ 导入失败：{result.error_message}[/red]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1778,38 +1673,22 @@ def test():
     """测试 LLM 连接"""
     console.print("[bold]测试 LLM 连接...[/bold]")
     
-    config = load_config()
-    
     try:
-        import requests
+        from rss2pod.services import LLMService
+        service = get_service(LLMService)
+        result = service.test_connection()
         
-        headers = {
-            "Authorization": f"Bearer {config['llm']['api_key']}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": config['llm']['model'],
-            "messages": [
-                {"role": "system", "content": "你是一个助手。"},
-                {"role": "user", "content": "你好，请用一句话介绍你自己"}
-            ]
-        }
-        
-        resp = requests.post(
-            f"{config['llm']['base_url']}/chat/completions",
-            headers=headers, json=data, timeout=30
-        )
-        
-        if resp.status_code == 200:
-            result = resp.json()
-            content = result['choices'][0]['message']['content']
+        if result.success:
             console.print(f"[green]✅ 连接成功![/green]")
-            console.print(f"\n[bold]回复:[/bold] {content}")
+            console.print(f"   提供商：{result.data.get('provider')}")
+            console.print(f"   模型：{result.data.get('model')}")
         else:
-            console.print(f"[red]❌ API 错误：{resp.status_code}[/red]")
-            console.print(f"响应：{resp.text[:200]}")
+            console.print(f"[red]❌ API 错误：{result.error_message}[/red]")
+            service.close()
             sys.exit(1)
-            
+        
+        service.close()
+
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
@@ -1820,32 +1699,19 @@ def chat(message: str = typer.Argument(..., help="要发送的消息")):
     """与 LLM 对话"""
     console.print(f"[bold]发送：{message}[/bold]\n")
     
-    config = load_config()
-    
     try:
-        import requests
+        from rss2pod.services import LLMService
+        service = get_service(LLMService)
+        result = service.chat(message)
         
-        headers = {
-            "Authorization": f"Bearer {config['llm']['api_key']}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": config['llm']['model'],
-            "messages": [{"role": "user", "content": message}]
-        }
-        
-        resp = requests.post(
-            f"{config['llm']['base_url']}/chat/completions",
-            headers=headers, json=data, timeout=60
-        )
-        
-        if resp.status_code == 200:
-            result = resp.json()
-            content = result['choices'][0]['message']['content']
-            console.print(f"[green][bold]回复:[/bold] {content}[/green]")
+        if result.success:
+            console.print(f"[green][bold]回复:[/bold] {result.data.get('content', '')}[/green]")
         else:
-            console.print(f"[red]❌ API 错误：{resp.status_code}[/red]")
+            console.print(f"[red]❌ API 错误：{result.error_message}[/red]")
+            service.close()
             sys.exit(1)
+        
+        service.close()
             
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -1862,28 +1728,24 @@ def test():
     """测试 TTS 连接"""
     console.print("[bold]测试 TTS 连接...[/bold]")
     
-    config = load_config()
-    
-    # 获取 TTS 配置（支持新的 providers 结构）
-    tts_config = config.get('tts', {})
-    active_provider = tts_config.get('active_provider', 'siliconflow')
-    active_adapter = tts_config.get('active_adapter', 'moss')
-    providers = tts_config.get('providers', {})
-    
-    if active_provider == 'siliconflow':
-        provider_config = providers.get('siliconflow', {})
-        adapter_config = provider_config.get('adapters', {}).get(active_adapter, {})
-        api_key = provider_config.get('api_key')
+    try:
+        from rss2pod.services import TTSService
+        service = get_service(TTSService)
+        result = service.test_connection()
         
-        if api_key:
-            console.print(f"[green]✅ SiliconFlow 已配置[/green]")
-            console.print(f"   适配器：{active_adapter}")
-            console.print(f"   模型：{adapter_config.get('model', 'N/A')}")
-            console.print(f"   音色：{adapter_config.get('voice_host' if active_adapter == 'moss' else 'voice', 'N/A')}")
+        if result.success:
+            console.print(f"[green]✅ TTS 已配置[/green]")
+            console.print(f"   提供商：{result.data.get('provider')}")
+            console.print(f"   适配器：{result.data.get('adapter')}")
+            console.print(f"   模型：{result.data.get('model')}")
         else:
-            console.print(f"[yellow]⚠️ SiliconFlow API Key 未配置[/yellow]")
-    else:
-        console.print(f"[yellow]⚠️ TTS 提供商：{active_provider}[/yellow]")
+            console.print(f"[yellow]⚠️ TTS 未配置：{result.error_message}[/yellow]")
+        
+        service.close()
+
+    except Exception as e:
+        console.print(f"[red]❌ 错误：{e}[/red]")
+        sys.exit(1)
 
 
 @tts_app.command("list-voices")
@@ -1891,29 +1753,45 @@ def list_voices():
     """列出可用音色"""
     console.print("[bold]SiliconFlow 可用音色[/bold]\n")
     
-    config = load_config()
-    tts_config = config.get('tts', {})
-    model = tts_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
-    
-    # 根据模型确定音色前缀
-    from tts.siliconflow_provider import SiliconFlowClient
-    voices = SiliconFlowClient.get_available_voices(model)
-    
-    console.print(f"[dim]当前配置模型：{model}[/dim]\n")
-    
-    table = Table(box=box.ROUNDED)
-    table.add_column("音色 ID", style="cyan")
-    table.add_column("描述", style="green")
-    
-    for voice in voices:
-        table.add_row(voice['id'], voice['name'])
-    
-    console.print(table)
-    
-    # 显示两个模型的音色说明
-    console.print("\n[yellow]注意：MOSS 模型和 CosyVoice 模型使用各自独立的音色系统[/yellow]")
-    console.print("  - MOSS 模型 (fnlp/MOSS-TTSD-v0.5): 使用 fnlp/MOSS-TTSD-v0.5:xxx 格式")
-    console.print("  - CosyVoice 模型 (FunAudioLLM/CosyVoice2-0.5B): 使用 FunAudioLLM/CosyVoice2-0.5B:xxx 格式")
+    try:
+        from rss2pod.services import TTSService
+        service = get_service(TTSService)
+        
+        # 获取当前配置的模型
+        config = load_config()
+        tts_config = config.get('tts', {})
+        model = tts_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
+        
+        result = service.list_voices(model=model)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        voices = result.data.get('voices', [])
+        
+        console.print(f"[dim]当前配置模型：{model}[/dim]\n")
+        
+        table = Table(box=box.ROUNDED)
+        table.add_column("音色 ID", style="cyan")
+        table.add_column("描述", style="green")
+        
+        for voice in voices:
+            table.add_row(voice.get('id', ''), voice.get('name', ''))
+        
+        console.print(table)
+        
+        # 显示两个模型的音色说明
+        console.print("\n[yellow]注意：MOSS 模型和 CosyVoice 模型使用各自独立的音色系统[/yellow]")
+        console.print("  - MOSS 模型 (fnlp/MOSS-TTSD-v0.5): 使用 fnlp/MOSS-TTSD-v0.5:xxx 格式")
+        console.print("  - CosyVoice 模型 (FunAudioLLM/CosyVoice2-0.5B): 使用 FunAudioLLM/CosyVoice2-0.5B:xxx 格式")
+        
+        service.close()
+        
+    except Exception as e:
+        console.print(f"[red]❌ 错误：{e}[/red]")
+        sys.exit(1)
 
 
 @tts_app.command()
@@ -1939,121 +1817,37 @@ def listen(
     console.print(f"[bold]TTS 转换[/bold]")
     console.print(f"输入文本：{text[:50]}{'...' if len(text) > 50 else ''}\n")
     
-    config = load_config()
-    
-    # 获取 TTS 配置（支持新的 providers 结构）
-    tts_config = config.get('tts', {})
-    active_provider = tts_config.get('active_provider', 'siliconflow')
-    active_adapter = tts_config.get('active_adapter', 'moss')
-    providers = tts_config.get('providers', {})
-    
-    # 获取当前 provider 和 adapter 的配置
-    provider_config = providers.get(active_provider, {})
-    adapter_config = provider_config.get('adapters', {}).get(active_adapter, {})
-    
-    provider = active_provider
-    api_key = provider_config.get('api_key')
-    base_url = provider_config.get('base_url', 'https://api.siliconflow.cn/v1')
-    model = adapter_config.get('model', 'fnlp/MOSS-TTSD-v0.5')
-    
-    # 根据 adapter 类型确定默认音色
-    if active_adapter == 'cosyvoice':
-        default_voice = adapter_config.get('voice', 'claire')
-    else:
-        default_voice = f"fnlp/MOSS-TTSD-v0.5:{adapter_config.get('voice_host', 'alex')}"
-    
-    # 使用命令行参数覆盖或默认值
-    selected_voice = voice or default_voice
-    
-    if provider != 'siliconflow':
-        console.print(f"[yellow]⚠️ 当前配置的 TTS 提供商是 {provider}，但 listen 命令仅支持 siliconflow[/yellow]")
-    
-    if not api_key:
-        console.print("[red]❌ TTS API Key 未配置[/red]")
-        console.print("请运行：[bold]rss2pod config set tts.providers.siliconflow.api_key <your_api_key>[/bold]")
-        return
-    
-    console.print(f"使用适配器：{active_adapter}")
-    console.print(f"使用模型：{model}")
-    console.print(f"使用音色：{selected_voice}")
-    
-    # 生成输出文件路径
-    if not output:
-        import hashlib
-        import time
-        timestamp = int(time.time())
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-        output = f"./output_{text_hash}_{timestamp}.mp3"
-    
-    # 调用 SiliconFlow 客户端
     try:
-        from tts.siliconflow_provider import SiliconFlowClient
+        from rss2pod.services import TTSService
+        service = get_service(TTSService)
         
-        async def synthesize():
-            client = SiliconFlowClient(
-                api_key=api_key,
-                base_url=base_url,
-                model=model
-            )
-            
-            try:
-                # 检测是否使用 CosyVoice 模型（单人）还是 MOSS 模型（双人/单人）
-                if 'CosyVoice' in model:
-                    # CosyVoice 单人模式
-                    # 使用完整的音色格式（格式：FunAudioLLM/CosyVoice2-0.5B:claire）
-                    # 如果 selected_voice 不包含模型前缀，则自动添加
-                    if ':' not in selected_voice:
-                        # 只提供了音色名称，需要添加模型前缀
-                        voice_full = f"{model}:{selected_voice}"
-                    else:
-                        # 已提供完整格式
-                        voice_full = selected_voice
-                    audio_data = await client.synthesize(text, voice=voice_full)
-                else:
-                    # MOSS 模型：支持单人 voice 模式或双人 references 模式
-                    # 如果 selected_voice 包含当前模型前缀，使用 voice 模式
-                    if selected_voice and selected_voice.startswith('fnlp/MOSS-TTSD-v0.5:'):
-                        # MOSS 单人 voice 模式
-                        audio_data = await client.synthesize(text, voice=selected_voice)
-                    else:
-                        # MOSS 双人 references 模式（向后兼容）
-                        voice_host = tts_config.get('voice_host', 'alex')
-                        voice_co_host = tts_config.get('voice_co_host', 'claire')
-                        references = client.build_references(
-                            host_voice=voice_host,
-                            co_host_voice=voice_co_host
-                        )
-                        audio_data = await client.synthesize(text, references=references)
-                
-                # 保存文件
-                output_path = Path(output)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(audio_data)
-                
-                return str(output_path.resolve()), audio_data
-                
-            finally:
-                await client.close()
+        # 生成输出文件路径
+        if not output:
+            import time
+            timestamp = int(time.time())
+            text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+            output = f"./output_{text_hash}_{timestamp}.mp3"
         
-        import asyncio
-        from pathlib import Path
+        # 调用 TTS 服务
+        result = service.synthesize(text=text, voice=voice, output_path=output)
         
-        audio_path, audio_data = asyncio.run(synthesize())
+        if result.success:
+            data = result.data
+            console.print(f"\n[green]✅ 转换成功![/green]")
+            console.print(f"   音频路径：{data.get('audio_path')}")
+            console.print(f"   文件大小：{data.get('file_size', 0)} 字节 ({data.get('file_size_kb', 0):.2f} KB)")
+            console.print(f"   预计时长：{data.get('estimated_duration', 0):.1f} 秒")
+        else:
+            console.print(f"[red]❌ 转换失败：{result.error_message}[/red]")
+            sys.exit(1)
         
-        # 显示结果
-        file_size = len(audio_data)
-        duration_estimate = file_size / 16000  # 粗略估算（假设 16kbps）
+        service.close()
         
-        console.print(f"\n[green]✅ 转换成功![/green]")
-        console.print(f"   音频路径：{audio_path}")
-        console.print(f"   文件大小：{file_size} 字节 ({file_size / 1024:.2f} KB)")
-        console.print(f"   预计时长：{duration_estimate:.1f} 秒")
-        
-    except ImportError as e:
-        console.print(f"[red]❌ 导入错误：{e}[/red]")
-        console.print("请确保已安装依赖：pip install aiohttp")
     except Exception as e:
-        console.print(f"[red]❌ 转换失败：{e}[/red]")
+        console.print(f"[red]❌ 错误：{e}[/red]")
+        import traceback
+        if get_verbose():
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
         sys.exit(1)
 
 
@@ -2067,21 +1861,23 @@ def stats():
     """显示数据库统计"""
     console.print(Panel("[bold blue]数据库统计[/bold blue]", box=box.DOUBLE))
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import StatsService
+        service = get_service(StatsService)
+        result = service.get_database_stats()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
-        stats = db.get_stats()
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
+        stats = result.data
         console.print(f"\n[bold]📊 统计信息[/bold]")
         console.print(f"   文章总数：{stats.get('total_articles', 0)}")
         console.print(f"   启用 Group: {stats.get('enabled_groups', 0)}")
         console.print(f"   期数总数：{stats.get('total_episodes', 0)}")
         
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2098,8 +1894,6 @@ def db_list_articles(
     
     默认显示所有文章。使用 --status pending 只显示待处理的文章。
     """
-    config = load_config()
-    
     # 确定查询状态
     query_status = "all"
     if status:
@@ -2114,19 +1908,21 @@ def db_list_articles(
     console.print(f"[bold]文章列表 ({status_text}, 限制：{limit})[/bold]\n")
     
     try:
-        from database.models import init_db
-        
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        from rss2pod.services import DatabaseService
+        service = get_service(DatabaseService)
         
         # 根据状态查询
         if query_status == "all":
-            cursor = db.conn.cursor()
-            cursor.execute('SELECT * FROM articles LIMIT ?', (limit,))
-            rows = cursor.fetchall()
-            articles = [db._row_to_article(row) for row in rows]
+            result = service.get_all_articles(limit=limit)
         else:
-            articles = db.get_articles_by_status(query_status, limit)
+            result = service.get_articles_by_status(query_status, limit=limit)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        articles = result.data
         
         if not articles:
             console.print(f"[yellow]没有找到 {status_text} 状态的文章[/yellow]")
@@ -2139,16 +1935,22 @@ def db_list_articles(
         table.add_column("Source", style="blue")
         
         for article in articles:
+            # Article 是 dataclass 对象，使用属性访问
+            article_id = article.id if hasattr(article, 'id') else article.get('id', '')
+            title = article.title if hasattr(article, 'title') else article.get('title', '')
+            status = article.status if hasattr(article, 'status') else article.get('status', '')
+            source = article.source if hasattr(article, 'source') else article.get('source', '')
+            
             table.add_row(
-                article.id[:12] + '...' if len(article.id) > 12 else article.id,
-                article.title[:50] + '...' if len(article.title) > 50 else article.title,
-                article.status,
-                article.source[:20] + '...' if len(article.source) > 20 else article.source
+                article_id[:12] + '...' if len(article_id) > 12 else article_id,
+                title[:50] + '...' if len(title) > 50 else title,
+                status,
+                source[:20] + '...' if len(source) > 20 else source
             )
         
         console.print(table)
         console.print(f"\n共 {len(articles)} 篇文章")
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2160,15 +1962,17 @@ def db_list_groups():
     """列出 Group"""
     console.print("[bold]Group 列表[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
+        result = service.list_groups()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        groups = db.get_all_groups()
+        groups = result.data
         
         if not groups:
             console.print("[yellow]没有找到 Group[/yellow]")
@@ -2182,21 +1986,19 @@ def db_list_groups():
         
         for group in groups:
             table.add_row(
-                group.id,
-                group.name,
-                "✅" if group.enabled else "❌",
-                f"{len(group.rss_sources)} 个"
+                group.get('id', ''),
+                group.get('name', ''),
+                "✅" if group.get('enabled', False) else "❌",
+                f"{len(group.get('rss_sources', []))} 个"
             )
         
         console.print(table)
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
         sys.exit(1)
 
-
-# ============== 入口 ==============
 
 # ============== generate 命令 ==============
 generate_app = typer.Typer(help="播客生成")
@@ -2219,43 +2021,55 @@ def run(
         rss2pod -v generate run group-1
     """
     
-    config = load_config()
-    
     # 根据 --verbose 设置日志级别
-    log_level = "DEBUG" if get_verbose() else "INFO"
+    log_level = "DEBUG" if get_verbose() or verbose else "INFO"
     
     try:
-        from database.models import init_db
-        from services.pipeline.group_processor import process_group_sync
-        from orchestrator.logging_config import setup_logging
+        from rss2pod.services import SchedulerService, GroupService
+        from rss2pod.services.logging_service import setup_logging
         
         # 设置日志级别
         setup_logging(level=log_level)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        scheduler_service = get_service(SchedulerService)
+        group_service = get_service(GroupService)
         
+        # 获取要处理的 Group 列表
         if all_groups or group_id is None:
-            groups = db.get_all_groups(enabled_only=True)
+            groups_result = scheduler_service.get_enabled_groups()
+            if not groups_result.success:
+                console.print(f"[red]❌ 错误：{groups_result.error_message}[/red]")
+                scheduler_service.close()
+                return
+            
+            groups = groups_result.data
             if not groups:
                 console.print("[yellow]没有启用的 Group[/yellow]")
                 return
             console.print(f"[bold]将触发 {len(groups)} 个启用的 Group[/bold]\n")
         else:
-            group = db.get_group(group_id)
-            if not group:
+            group_result = group_service.get_group(group_id)
+            if not group_result.success:
                 console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+                group_service.close()
+                scheduler_service.close()
                 return
-            groups = [group]
+            groups = [group_result.data]
+            if not groups[0]:
+                console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+                group_service.close()
+                scheduler_service.close()
+                return
         
         success_count = 0
         fail_count = 0
         
         for group in groups:
-            console.print(Panel(f"[bold]处理 Group: {group.name}[/bold]", box=box.ROUNDED))
-            console.print(f"  ID: {group.id}")
-            console.print(f"  触发类型：{group.trigger_type}")
-            console.print(f"  RSS 源：{len(group.rss_sources)} 个")
+            gid = group.get('id')
+            console.print(Panel(f"[bold]处理 Group: {group.get('name')}[/bold]", box=box.ROUNDED))
+            console.print(f"  ID: {gid}")
+            console.print(f"  触发类型：{group.get('trigger_type')}")
+            console.print(f"  RSS 源：{len(group.get('rss_sources', []))} 个")
             
             if force:
                 console.print("  [yellow]⚠️ 强制模式 - 将使用最新三篇文章[/yellow]")
@@ -2268,17 +2082,21 @@ def run(
                 console.print("  [dim]（模拟：检查未读文章 -> 摘要 -> 生成脚本 -> TTS）[/dim]\n")
             else:
                 try:
-                    result = process_group_sync(group.id, db_path, force=force, export_articles=export_articles)
+                    result = scheduler_service.trigger_generation(
+                        gid,
+                        force=force,
+                        export_articles=export_articles
+                    )
                     
                     if result.success:
                         console.print(f"[green]✓ 成功[/green]")
-                        console.print(f"  Episode: {result.episode_id}")
-                        console.print(f"  完成阶段：{', '.join(result.stages_completed)}")
-                        console.print(f"  获取文章：{result.articles_fetched}")
+                        console.print(f"  Episode: {result.data.get('episode_id')}")
+                        console.print(f"  完成阶段：{', '.join(result.data.get('stages_completed', []))}")
+                        console.print(f"  获取文章：{result.data.get('articles_fetched')}")
                         success_count += 1
                     else:
                         console.print(f"[red]✗ 失败[/red]")
-                        console.print(f"  失败阶段：{result.failed_stage}")
+                        console.print(f"  失败阶段：{result.data.get('failed_stage')}")
                         console.print(f"  错误：{result.error_message}")
                         fail_count += 1
                 except Exception as e:
@@ -2287,7 +2105,7 @@ def run(
             
             console.print()
         
-        db.close()
+        scheduler_service.close()
         
         if dry_run:
             console.print("[bold]模拟运行完成[/bold]")
@@ -2311,20 +2129,21 @@ def history(
     """查看生成历史"""
     console.print(f"[bold]生成历史 (限制：{limit})[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
-        
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        from rss2pod.services import SchedulerService
+        service = get_service(SchedulerService)
         
         if group_id:
-            episodes = db.get_episodes_by_group(group_id, limit)
+            result = service.get_generation_history(group_id=group_id, limit=limit)
         else:
-            cursor = db.conn.cursor()
-            cursor.execute('SELECT * FROM episodes ORDER BY created_at DESC LIMIT ?', (limit,))
-            episodes = [db._row_to_episode(row) for row in cursor.fetchall()]
+            result = service.get_generation_history(limit=limit)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        episodes = result.data
         
         if not episodes:
             console.print("[yellow]没有找到期数[/yellow]")
@@ -2339,15 +2158,15 @@ def history(
         
         for ep in episodes:
             table.add_row(
-                ep.id[:8] + '...',
-                ep.group_id,
-                ep.title[:40] + '...' if len(ep.title) > 40 else ep.title,
-                f"#{ep.episode_number}",
-                "✅" if ep.audio_path else "❌"
+                ep.get('id', '')[:8] + '...',
+                ep.get('group_id', ''),
+                ep.get('title', '')[:40] + '...' if len(ep.get('title', '')) > 40 else ep.get('title', ''),
+                f"#{ep.get('episode_number', 0)}",
+                "✅" if ep.get('audio_path') else "❌"
             )
         
         console.print(table)
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2364,26 +2183,28 @@ def status(group_id: str = typer.Argument(..., help="Group ID")):
     """查看触发器状态"""
     console.print(f"[bold]触发器状态：{group_id}[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
+        result = service.get_group(group_id)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        group = db.get_group(group_id)
+        group = result.data
         
         if not group:
             console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
             return
         
-        console.print(f"Group: {group.name}")
-        console.print(f"状态：{'✅ 启用' if group.enabled else '❌ 禁用'}")
-        console.print(f"触发类型：{group.trigger_type}")
-        console.print(f"触发配置：{json.dumps(group.trigger_config, indent=2)}")
+        console.print(f"Group: {group.get('name')}")
+        console.print(f"状态：{'✅ 启用' if group.get('enabled') else '❌ 禁用'}")
+        console.print(f"触发类型：{group.get('trigger_type')}")
+        console.print(f"触发配置：{json.dumps(group.get('trigger_config', {}), indent=2)}")
         
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2400,33 +2221,29 @@ def set(
     """设置触发器"""
     console.print(f"[bold]设置触发器：{group_id}[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
-        
-        group = db.get_group(group_id)
-        
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            return
-        
-        group.trigger_type = trigger_type
-        group.trigger_config = {
-            "cron": cron,
-            "threshold": threshold
+        update_data = {
+            'trigger_type': trigger_type,
+            'trigger_config': {
+                'cron': cron,
+                'threshold': threshold
+            }
         }
         
-        db.update_group(group)
-        console.print("[green]✅ 触发器已更新[/green]")
-        console.print(f"  类型：{trigger_type}")
-        console.print(f"  Cron: {cron}")
-        console.print(f"  阈值：{threshold}")
+        result = service.update_group(group_id, update_data)
         
-        db.close()
+        if result.success:
+            console.print("[green]✅ 触发器已更新[/green]")
+            console.print(f"  类型：{trigger_type}")
+            console.print(f"  Cron: {cron}")
+            console.print(f"  阈值：{threshold}")
+        else:
+            console.print(f"[red]❌ 更新失败：{result.error_message}[/red]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2438,25 +2255,18 @@ def disable(group_id: str = typer.Argument(..., help="Group ID")):
     """禁用触发器（禁用 Group）"""
     console.print(f"[bold]禁用触发器：{group_id}[/bold]")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
+        from rss2pod.services import GroupService
+        service = get_service(GroupService)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        result = service.disable_group(group_id)
         
-        group = db.get_group(group_id)
+        if result.success:
+            console.print("[green]✅ Group 已禁用，触发器停止工作[/green]")
+        else:
+            console.print(f"[red]❌ 禁用失败：{result.error_message}[/red]")
         
-        if not group:
-            console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
-            return
-        
-        group.enabled = False
-        db.update_group(group)
-        console.print("[green]✅ Group 已禁用，触发器停止工作[/green]")
-        
-        db.close()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2473,23 +2283,27 @@ def start():
     """启动调度器（守护进程）"""
     console.print(Panel("[bold blue]启动 RSS2Pod 调度器[/bold blue]", box=box.DOUBLE))
     
-    config = load_config()
-    
     try:
-        from orchestrator import Scheduler
+        from rss2pod.services import SchedulerService
+        from rss2pod.services.logging_service import setup_logging
         
+        # 设置日志
+        log_level = "DEBUG" if get_verbose() else "INFO"
+        setup_logging(level=log_level)
+        
+        scheduler_service = get_service(SchedulerService)
+        
+        # 获取配置
+        config = load_config()
         orchestrator_config = config.get('orchestrator', {})
-        log_config = config.get('logging', {})
-        orchestrator_config['logging'] = log_config
-        
-        scheduler = Scheduler(orchestrator_config, db_path=config.get('db_path', 'rss2pod.db'))
         
         console.print("[green]✓[/green] 调度器已启动")
         console.print(f"  检查间隔：{orchestrator_config.get('check_interval_seconds', 60)}秒")
         console.print(f"  最大并发：{orchestrator_config.get('max_concurrent_groups', 3)}个 Group")
         console.print("\n[dim]按 Ctrl+C 停止调度器[/dim]\n")
         
-        scheduler.start()
+        # 启动调度器
+        scheduler_service.start()
         
     except ImportError as e:
         console.print(f"[red]❌ 导入错误：{e}[/red]")
@@ -2507,39 +2321,38 @@ def status():
     """查看调度器状态"""
     console.print("[bold]调度器状态[/bold]\n")
     
-    config = load_config()
-    
     try:
-        from database.models import init_db
-        from orchestrator.state_manager import StateManager
+        from rss2pod.services import SchedulerService
+        service = get_service(SchedulerService)
+        result = service.get_status()
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
-        state_manager = StateManager(db)
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
         
-        # 获取状态统计
-        stats = state_manager.get_stats()
+        data = result.data
         
+        # 显示状态统计
+        states = data.get('states_by_status', {})
         console.print(f"[bold]处理状态统计:[/bold]")
-        for status, count in stats.get('states_by_status', {}).items():
-            status_icon = {"idle": "⏸️", "running": "▶️", "error": "❌", "disabled": "🚫"}.get(status, "•")
-            console.print(f"  {status_icon} {status}: {count}")
+        for status_name, count in states.items():
+            status_icon = {"idle": "⏸️", "running": "▶️", "error": "❌", "disabled": "🚫"}.get(status_name, "•")
+            console.print(f"  {status_icon} {status_name}: {count}")
         
-        console.print(f"\n[bold]运行中管道：[/bold]{stats.get('running_pipelines', 0)}")
-        console.print(f"[bold]今日运行：[/bold]{stats.get('runs_today', 0)}")
+        console.print(f"\n[bold]运行中管道：[/bold]{data.get('running_pipelines', 0)}")
+        console.print(f"[bold]今日运行：[/bold]{data.get('runs_today', 0)}")
         
         # 显示启用的 Group
-        groups = db.get_all_groups(enabled_only=True)
-        console.print(f"\n[bold]启用的 Group: [/bold]{len(groups)}")
-        for group in groups[:5]:
-            trigger_config = group.trigger_config or {}
-            cron = trigger_config.get('cron', 'N/A')
-            console.print(f"  • {group.name} (Cron: {cron})")
+        enabled_groups = data.get('enabled_groups', [])
+        console.print(f"\n[bold]启用的 Group: [/bold]{len(enabled_groups)}")
+        for group_info in enabled_groups[:5]:
+            console.print(f"  • {group_info.get('name', 'N/A')} (Cron: {group_info.get('cron', 'N/A')})")
         
-        if len(groups) > 5:
-            console.print(f"  ... 还有 {len(groups) - 5} 个")
+        if len(enabled_groups) > 5:
+            console.print(f"  ... 还有 {len(enabled_groups) - 5} 个")
         
-        db.close()
+        service.close()
         
     except ImportError as e:
         console.print(f"[red]❌ 导入错误：{e}[/red]")
@@ -2568,58 +2381,49 @@ def run(group_id: str = typer.Argument(None, help="Group ID（不填则触发所
     """
     console.print("[bold]手动触发调度[/bold]\n")
     
-    config = load_config()
-    
     # 根据 --verbose 设置日志级别
     log_level = "DEBUG" if get_verbose() else "INFO"
     
     try:
-        from database.models import init_db
-        from services.pipeline.group_processor import process_group_sync
-        from orchestrator.logging_config import setup_logging
+        from rss2pod.services import SchedulerService
+        from rss2pod.services.logging_service import setup_logging
         
         # 设置日志级别
         setup_logging(level=log_level)
         
-        db_path = os.path.join(os.path.dirname(__file__), config.get('db_path', 'rss2pod.db'))
-        db = init_db(db_path)
+        scheduler_service = get_service(SchedulerService)
         
         if group_id:
-            groups = [db.get_group(group_id)] if db.get_group(group_id) else []
-            if not groups:
-                console.print(f"[red]❌ 未找到 Group: {group_id}[/red]")
+            # 触发指定 Group
+            result = scheduler_service.run_once(group_id)
+            
+            if not result.success:
+                console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+                scheduler_service.close()
                 return
+            
+            console.print(f"[green]✅ 触发成功[/green]")
+            console.print(f"  Group: {result.data.get('group_name')}")
+            console.print(f"  Episode: {result.data.get('episode_id')}")
         else:
-            groups = db.get_all_groups(enabled_only=True)
-        
-        if not groups:
-            console.print("[yellow]没有需要处理的 Group[/yellow]")
-            return
-        
-        console.print(f"将处理 {len(groups)} 个 Group\n")
-        
-        for group in groups:
-            console.print(Panel(f"[bold]处理：{group.name}[/bold]", box=box.ROUNDED))
+            # 触发所有启用的 Group
+            result = scheduler_service.run_once()
             
-            try:
-                result = process_group_sync(group.id, db_path)
-                
-                if result.success:
-                    console.print(f"[green]✓ 成功[/green]")
-                    console.print(f"  Episode: {result.episode_id}")
-                    console.print(f"  完成阶段：{', '.join(result.stages_completed)}")
-                    console.print(f"  获取文章：{result.articles_fetched}")
+            if not result.success:
+                console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+                scheduler_service.close()
+                return
+            
+            results = result.data
+            console.print(f"[green]✅ 触发完成[/green]")
+            console.print(f"  处理 Group 数：{len(results)}")
+            for r in results:
+                if r.get('success'):
+                    console.print(f"  ✓ {r.get('group_name')}: {r.get('episode_id')}")
                 else:
-                    console.print(f"[red]✗ 失败[/red]")
-                    console.print(f"  失败阶段：{result.failed_stage}")
-                    console.print(f"  错误：{result.error_message}")
-                
-            except Exception as e:
-                console.print(f"[red]✗ 异常：{e}[/red]")
-            
-            console.print()
+                    console.print(f"  ✗ {r.get('group_name')}: {r.get('error_message')}")
         
-        db.close()
+        scheduler_service.close()
         
     except ImportError as e:
         console.print(f"[red]❌ 导入错误：{e}[/red]")
@@ -2637,8 +2441,6 @@ def test_trigger(group_id: str = typer.Argument(..., help="Group ID")):
     """
     console.print("[bold]测试触发条件[/bold]\n")
     
-    config = load_config()
-    
     try:
         from rss2pod.services import SchedulerService
         
@@ -2653,40 +2455,40 @@ def test_trigger(group_id: str = typer.Argument(..., help="Group ID")):
         data = result.data
         
         # 显示基本信息
-        console.print(Panel(f"[bold]{data['group_name']}[/bold]", box=box.DOUBLE))
-        console.print(f"ID:    {data['group_id']}")
-        console.print(f"状态:  {'✅ 启用' if data['enabled'] else '❌ 禁用'}")
-        console.print(f"类型:  {data['trigger_type']}")
+        console.print(Panel(f"[bold]{data.get('group_name')}[/bold]", box=box.DOUBLE))
+        console.print(f"ID:    {data.get('group_id')}")
+        console.print(f"状态：  {'✅ 启用' if data.get('enabled') else '❌ 禁用'}")
+        console.print(f"类型：  {data.get('trigger_type')}")
         
         # Cron 触发信息
         if 'cron' in data:
-            cron = data['cron']
+            cron = data.get('cron', {})
             console.print(f"\n[bold]⏰ Cron 触发[/bold]")
-            console.print(f"  表达式: {cron.get('expression') or '未配置'}")
+            console.print(f"  表达式：{cron.get('expression') or '未配置'}")
             
             if cron.get('expression'):
                 next_run = cron.get('next_run')
                 if next_run:
-                    console.print(f"  下次运行: {next_run}")
+                    console.print(f"  下次运行：{next_run}")
                 
                 if cron.get('will_trigger'):
-                    console.print(f"  状态: [green]✅ 会触发[/green]")
+                    console.print(f"  状态：[green]✅ 会触发[/green]")
                 else:
                     remaining = cron.get('remaining', 'N/A')
-                    console.print(f"  状态: [red]❌ 不会触发 (还差 {remaining})[/red]")
+                    console.print(f"  状态：[red]❌ 不会触发 (还差 {remaining})[/red]")
         
         # 数量触发信息
         if 'count' in data:
-            count = data['count']
+            count = data.get('count', {})
             console.print(f"\n[bold]📊 数量触发[/bold]")
-            console.print(f"  阈值: {count.get('threshold', 0)} 篇")
-            console.print(f"  当前: {count.get('current', 0)} 篇")
+            console.print(f"  阈值：{count.get('threshold', 0)} 篇")
+            console.print(f"  当前：{count.get('current', 0)} 篇")
             
             if count.get('will_trigger'):
-                console.print(f"  状态: [green]✅ 会触发[/green]")
+                console.print(f"  状态：[green]✅ 会触发[/green]")
             else:
                 remaining = count.get('remaining', 0)
-                console.print(f"  状态: [red]❌ 不会触发 (还差 {remaining} 篇)[/red]")
+                console.print(f"  状态：[red]❌ 不会触发 (还差 {remaining} 篇)[/red]")
         
         # 结论
         console.print()
@@ -2724,9 +2526,17 @@ def assets_list(
     console.print(f"[bold]Episode 资源列表：{group_id}[/bold]\n")
     
     try:
-        from services.asset_service import list_episode_assets
+        from rss2pod.services import AssetService
+        service = get_service(AssetService)
         
-        episodes = list_episode_assets(group_id)
+        result = service.list_episode_assets(group_id)
+        
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
+            return
+        
+        episodes = result.data
         
         if not episodes:
             console.print("[yellow]没有找到任何 Episode 资源[/yellow]")
@@ -2760,7 +2570,6 @@ def assets_list(
             if audio_segments:
                 console.print(f"\n[bold]分段音频:[/bold]")
                 for seg_path in audio_segments:
-                    import os
                     filename = os.path.basename(seg_path)
                     file_size = os.path.getsize(seg_path) if os.path.exists(seg_path) else 0
                     size_kb = file_size / 1024
@@ -2771,6 +2580,7 @@ def assets_list(
             console.print()
         
         console.print(f"共 {len(episodes)} 个 Episode")
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2789,13 +2599,17 @@ def assets_show(
     console.print(f"[bold]Episode 资源详情：{group_id} / {timestamp}[/bold]\n")
     
     try:
-        from services.asset_service import get_episode_assets
+        from rss2pod.services import AssetService
+        service = get_service(AssetService)
         
-        assets = get_episode_assets(group_id, timestamp)
+        result = service.get_episode_assets(group_id, timestamp)
         
-        if not assets:
-            console.print("[yellow]未找到该 Episode 资源[/yellow]")
+        if not result.success:
+            console.print(f"[red]❌ 错误：{result.error_message}[/red]")
+            service.close()
             return
+        
+        assets = result.data
         
         console.print(f"资源目录：{assets.get('assets_dir')}")
         
@@ -2819,7 +2633,6 @@ def assets_show(
         if audio_segments:
             console.print(f"\n[bold]分段音频:[/bold]")
             for seg_path in audio_segments:
-                import os
                 filename = os.path.basename(seg_path)
                 file_size = os.path.getsize(seg_path) if os.path.exists(seg_path) else 0
                 size_kb = file_size / 1024
@@ -2828,6 +2641,7 @@ def assets_show(
             console.print(f"\n[yellow]⚠️  无分段音频[/yellow]")
         
         console.print()
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")
@@ -2847,20 +2661,34 @@ def assets_cleanup(
         console.print(f"[bold]清理 Group 所有 Episode 中间文件：{group_id}[/bold]")
     
     try:
-        from services.asset_service import cleanup_episode_assets, list_episode_assets
+        from rss2pod.services import AssetService
+        service = get_service(AssetService)
         
         if timestamp:
             # 清理指定 Episode
             if not force:
                 if not Confirm.ask("\n此操作将删除中间文件（分段音频、文稿），但保留最终音频。确认删除？"):
                     console.print("[yellow]已取消[/yellow]")
+                    service.close()
                     return
             
-            cleanup_episode_assets(group_id, timestamp)
-            console.print(f"[green]✅ 已清理 Episode {timestamp} 的中间文件[/green]")
+            result = service.cleanup_episode_assets(group_id, timestamp)
+            
+            if result.success:
+                console.print(f"[green]✅ 已清理 Episode {timestamp} 的中间文件[/green]")
+            else:
+                console.print(f"[red]❌ 清理失败：{result.error_message}[/red]")
         else:
             # 清理所有 Episode
-            episodes = list_episode_assets(group_id)
+            list_result = service.list_episode_assets(group_id)
+            
+            if not list_result.success:
+                console.print(f"[red]❌ 错误：{list_result.error_message}[/red]")
+                service.close()
+                return
+            
+            episodes = list_result.data
+            
             if not episodes:
                 console.print("[yellow]没有找到任何 Episode 资源[/yellow]")
                 return
@@ -2873,14 +2701,20 @@ def assets_cleanup(
             if not force:
                 if not Confirm.ask("\n此操作将删除所有中间文件（分段音频、文稿），但保留最终音频。确认删除？"):
                     console.print("[yellow]已取消[/yellow]")
+                    service.close()
                     return
             
             for ep in episodes:
                 ts = ep.get('episode_timestamp', 'unknown')
-                cleanup_episode_assets(group_id, ts)
-                console.print(f"  [green]✓ 已清理 {ts}[/green]")
+                result = service.cleanup_episode_assets(group_id, ts)
+                if result.success:
+                    console.print(f"  [green]✓ 已清理 {ts}[/green]")
+                else:
+                    console.print(f"  [red]✗ {ts}: {result.error_message}[/red]")
             
             console.print(f"\n[green]✅ 已清理 {len(episodes)} 个 Episode 的中间文件[/green]")
+        
+        service.close()
         
     except Exception as e:
         console.print(f"[red]❌ 错误：{e}[/red]")

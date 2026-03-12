@@ -106,6 +106,9 @@ class PipelineOrchestrator:
         self.fever_service = FeverService(db_path=db_path)
         self.state_service = StateService(db_path=db_path)
         self.database_service = DatabaseService(db_path=db_path)
+        
+        # asset_manager 在 run 方法中初始化
+        self.asset_manager = None
     
     async def _retry_on_failure(
         self,
@@ -150,6 +153,7 @@ class PipelineOrchestrator:
         # 创建资源管理器
         asset_manager = self.asset_service.get_episode_manager(self.group.id, timestamp)
         asset_manager.initialize()
+        self.asset_manager = asset_manager  # 保存为实例属性
         self.logger.info(f"[assets] 资源目录已创建：{asset_manager.assets_dir}")
         
         try:
@@ -437,7 +441,9 @@ class PipelineOrchestrator:
                 group_summary=group_summary,
                 prompt_template=prompt_template,
                 podcast_structure=podcast_structure,
-                english_learning_mode=english_learning_mode
+                english_learning_mode=english_learning_mode,
+                group_id=self.group.id,  # 传递 group_id 以支持 Group 级别的 prompt 覆盖
+                asset_manager=self.asset_manager  # 传递 asset_manager 以保存 LLM prompt 输入
             )
             
             # 转换为 TTS 输入格式 - 使用 TTSService 的公共方法

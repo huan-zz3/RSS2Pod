@@ -90,6 +90,11 @@ class EpisodeAssetManager:
         """MOSS TTS 输入文件路径（兼容旧版本）"""
         return os.path.join(self.assets_dir, 'moss_input.json')
     
+    @property
+    def llm_prompt_input_path(self) -> str:
+        """LLM Prompt 输入文件路径（用于调试）"""
+        return os.path.join(self.assets_dir, 'llm_prompt_input.json')
+    
     def get_tts_input_path(self, adapter_name: str = 'moss') -> str:
         """
         根据 TTS 适配器名称获取对应的 TTS 输入文件路径
@@ -185,6 +190,21 @@ class EpisodeAssetManager:
                 json.dump(moss_input, f, ensure_ascii=False, indent=2)
         
         return script_path
+    
+    def save_llm_prompt_input(self, prompt_data: Dict[str, Any]) -> str:
+        """
+        保存发送给 LLM 的 prompt 输入（用于调试）
+        
+        Args:
+            prompt_data: 包含 prompt、变量等信息的字典
+            
+        Returns:
+            保存的文件路径
+        """
+        path = self.llm_prompt_input_path
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(prompt_data, f, ensure_ascii=False, indent=2)
+        return path
     
     def load_podcast_script(self) -> Optional[Dict[str, Any]]:
         """

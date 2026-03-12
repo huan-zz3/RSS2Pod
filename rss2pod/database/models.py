@@ -339,6 +339,12 @@ class DatabaseManager:
         cursor.execute('SELECT * FROM articles WHERE status = ? LIMIT ?', (status, limit))
         return [self._row_to_article(row) for row in cursor.fetchall()]
 
+    def get_all_articles(self, limit: int = 100) -> List[Article]:
+        """获取所有文章（不限制状态）"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM articles ORDER BY created_at DESC LIMIT ?', (limit,))
+        return [self._row_to_article(row) for row in cursor.fetchall()]
+
     def get_articles_by_source(self, source: str, status: Optional[str] = None) -> List[Article]:
         cursor = self.conn.cursor()
         if status:

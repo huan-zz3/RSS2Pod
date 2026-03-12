@@ -79,6 +79,11 @@ class PodcastGroup:
         if not self.updated_at:
             self.updated_at = self.created_at
     
+    @property
+    def name(self) -> str:
+        """兼容别名：返回 title，与 database.models.Group 保持一致"""
+        return self.title
+    
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
@@ -132,7 +137,7 @@ class FeedManager:
     def create_group(self, group_id: str, title: str, link: str, 
                     description: str, **kwargs) -> PodcastGroup:
         """
-        Create a new podcast group.
+        Create a new podcast group (idempotent).
         
         Args:
             group_id: Unique group identifier
@@ -142,8 +147,22 @@ class FeedManager:
             **kwargs: Additional group parameters
         
         Returns:
-            Created PodcastGroup
+            Created or updated PodcastGroup
         """
+        # 幂等性：如果 group 已存在，更新而不是报错
+        if group_id in self._groups:
+            existing = self._groups[group_id]
+            existing.title = title
+            existing.link = link
+            existing.description = description
+            # 更新其他可选参数
+            for key, value in kwargs.items():
+                if hasattr(existing, key):
+                    setattr(existing, key, value)
+            existing.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save_group(existing)
+            return existing
+        
         group = PodcastGroup(
             id=group_id,
             title=title,
@@ -165,6 +184,47 @@ class FeedManager:
         self._create_feed_generator(group_id)
         
         return group
+    
+    def sync_group(self, group_id: str, group_data: Dict[str, Any]) -> PodcastGroup:
+        """
+        Sync a group from external data source (e.g., database) to FeedManager.
+        
+        This method ensures that the group exists in FeedManager's memory cache.
+        If the group already exists, it updates the metadata.
+        
+        Args:
+            group_id: Group identifier
+            group_data: Group data dictionary with keys:
+                       - title: Group title
+                       - link: Group link
+                       - description: Group description
+                       - language: (optional) Language code
+                       - author: (optional) Author name
+                       - image: (optional) Image URL
+                       - category: (optional) Category
+        
+        Returns:
+            Synced PodcastGroup
+        """
+        title = group_data.get('title', group_id)
+        link = group_data.get('link', '')
+        description = group_data.get('description', '')
+        language = group_data.get('language', 'zh-cn')
+        author = group_data.get('author', 'RSS2Pod')
+        image = group_data.get('image', '')
+        category = group_data.get('category', '')
+        
+        # Use create_group which is idempotent
+        return self.create_group(
+            group_id=group_id,
+            title=title,
+            link=link,
+            description=description,
+            language=language,
+            author=author,
+            image=image,
+            category=category
+        )
     
     def get_group(self, group_id: str) -> Optional[PodcastGroup]:
         """Get a group by ID."""

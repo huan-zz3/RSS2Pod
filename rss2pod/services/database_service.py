@@ -205,6 +205,22 @@ class DatabaseService(BaseService):
         except Exception as e:
             return ServiceResult(success=False, error_message=str(e))
     
+    def get_all_articles(self, limit: int = 100) -> ServiceResult:
+        """
+        获取所有 Article 列表（不限制状态）
+        
+        Args:
+            limit: 返回数量限制
+            
+        Returns:
+            ServiceResult 实例
+        """
+        try:
+            articles = self.db.get_all_articles(limit)
+            return ServiceResult(success=True, data=articles, metadata={"count": len(articles)})
+        except Exception as e:
+            return ServiceResult(success=False, error_message=str(e))
+    
     def get_articles_by_source(self, source: str, status: Optional[str] = None) -> ServiceResult:
         """
         根据源获取 Article 列表

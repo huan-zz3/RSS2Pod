@@ -244,10 +244,16 @@ class LLMService(BaseService):
         """
         from llm.prompt_manager import get_prompt_manager
         
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            'config.json'
-        )
+        # 使用正确的配置文件路径
+        # 优先使用传入的 config_path，否则使用 rss2pod/config.json
+        if self.config_path and os.path.exists(self.config_path):
+            config_path = self.config_path
+        else:
+            # 使用 rss2pod/config.json
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'config.json'
+            )
         return get_prompt_manager(config_path)
     
     def get_prompt_template(
@@ -302,12 +308,58 @@ class LLMService(BaseService):
         """获取 PromptManager 实例（内部使用）"""
         return self.get_prompt_manager()
     
+    def _get_learning_requirement(
+        self,
+        prompt_manager,
+        group_id: Optional[str],
+        english_learning_mode: str
+    ) -> str:
+        """
+        获取英语学习要求配置
+        
+        优先级：
+        1. Group 的 prompt_overrides 中自定义的 learning_requirement
+        2. config.json 中配置的 learning_requirements.{mode}
+        3. 默认值（空字符串）
+        
+        Args:
+            prompt_manager: PromptManager 实例
+            group_id: Group ID
+            english_learning_mode: 英语学习模式 (off, vocab, translation)
+            
+        Returns:
+            英语学习要求文本
+        """
+        # 如果有 group_id，尝试从数据库获取 Group 的 prompt_overrides
+        if group_id and self.db:
+            group = self.db.get_group(group_id)
+            if group:
+                prompt_overrides = getattr(group, 'prompt_overrides', {})
+                if prompt_overrides:
+                    script_gen_override = prompt_overrides.get('prompt_overrides', {}).get('script_generator', {})
+                    if script_gen_override:
+                        # 检查是否有自定义的 learning_requirement 选项
+                        prompt_options = script_gen_override.get('prompt_options', {})
+                        if prompt_options:
+                            learning_req = prompt_options.get('learning_requirements', {}).get(english_learning_mode, '')
+                            if learning_req:
+                                return learning_req
+        
+        # 从 config.json 读取默认配置
+        return prompt_manager.get_prompt_option(
+            "script_generator",
+            f"learning_requirements.{english_learning_mode}",
+            " "  # 默认空字符串
+        )
+    
     def generate_script(
         self,
         group_summary: Dict[str, Any],
         prompt_template: str,
         podcast_structure: str = 'single',
-        english_learning_mode: str = 'off'
+        english_learning_mode: str = 'off',
+        group_id: Optional[str] = None,
+        asset_manager=None  # 用于保存 LLM prompt 输入（调试用）
     ) -> Dict[str, Any]:
         """
         生成播客脚本
@@ -316,7 +368,9 @@ class LLMService(BaseService):
             group_summary: 组级摘要
             prompt_template: Prompt 模板
             podcast_structure: 播客结构 ('single' 或 'dual')
-            english_learning_mode: 英语学习模式
+            english_learning_mode: 英语学习模式 (off, vocab, translation)
+            group_id: Group ID（可选，用于获取 Group 的 prompt 覆盖配置）
+            asset_manager: EpisodeAssetManager 实例（可选，用于保存 LLM prompt 输入）
             
         Returns:
             包含 title 和 segments 的脚本字典
@@ -334,11 +388,12 @@ class LLMService(BaseService):
                 "使用单人播报风格" if podcast_structure == "single" else "区分主持人 (host) 和协主持人 (co_host) 的对话，交替发言"
             )
             
-            # 从 prompt_options 读取 learning_requirement
-            learning_requirement = prompt_manager.get_prompt_option(
-                "script_generator",
-                f"learning_requirements.{english_learning_mode}",
-                " "  # 默认空字符串
+            # 获取 learning_requirement
+            # 优先从 Group 的 prompt_overrides 中读取（如果存在）
+            learning_requirement = self._get_learning_requirement(
+                prompt_manager=prompt_manager,
+                group_id=group_id,
+                english_learning_mode=english_learning_mode
             )
             
             # 构建 prompt 变量
@@ -354,7 +409,7 @@ class LLMService(BaseService):
             highlights_text = '\n'.join(['- ' + h for h in highlights]) if highlights else '无特定亮点'
             
             # 渲染 prompt
-            prompt = prompt_template.format(
+            rendered_prompt = prompt_template.format(
                 group_name='',
                 structure_text=structure_text,
                 learning_text=learning_text,
@@ -365,8 +420,30 @@ class LLMService(BaseService):
                 learning_requirement=learning_requirement
             )
             
+            # 保存 LLM prompt 输入（用于调试）
+            if asset_manager is not None:
+                prompt_input_data = {
+                    'rendered_prompt': rendered_prompt,
+                    'variables': {
+                        'group_name': '',
+                        'structure_text': structure_text,
+                        'learning_text': learning_text,
+                        'executive_summary': executive_summary,
+                        'full_summary': full_summary,
+                        'highlights_text': highlights_text,
+                        'structure_requirement': structure_requirement,
+                        'learning_requirement': learning_requirement
+                    },
+                    'config': {
+                        'podcast_structure': podcast_structure,
+                        'english_learning_mode': english_learning_mode,
+                        'group_id': group_id
+                    }
+                }
+                asset_manager.save_llm_prompt_input(prompt_input_data)
+            
             # 调用 LLM 生成 JSON
-            script_json = client.generate_json(prompt)
+            script_json = client.generate_json(rendered_prompt)
             
             return script_json
             

@@ -3,11 +3,16 @@ RSS Feed 服务 - 封装 RSS Feed 生成相关操作
 
 本服务作为 FeedManager 的 Facade 代理，所有操作都委托给 FeedManager 处理，
 以确保与 pipeline 的兼容性。
+
+设计原则：
+- 数据库是 Group 配置的唯一真实来源
+- FeedManager 只是 RSS 生成的工具
+- FeedService 负责在需要时同步数据库到 FeedManager
 """
 
 import os
 import sys
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 from datetime import datetime, timezone
 
 # Add parent directory to path for imports
@@ -28,6 +33,7 @@ class FeedService(BaseService):
         super().__init__(config_path, db_path)
         self._config = None
         self._feed_manager = None
+        self._synced_groups: Set[str] = set()  # 跟踪已同步到 FeedManager 的 group
     
     def _get_config(self) -> Dict[str, Any]:
         """获取配置"""
@@ -40,11 +46,24 @@ class FeedService(BaseService):
         """获取数据库实例"""
         if self._db is None:
             from database.models import init_db
-            config = self._get_config()
-            db_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                config.get('db_path', 'rss2pod.db')
-            )
+            
+            # 优先使用构造函数传入的 db_path，其次使用配置文件中的路径
+            if self.db_path:
+                db_path = self.db_path
+            else:
+                config = self._get_config()
+                db_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    config.get('db_path', 'rss2pod.db')
+                )
+            
+            # 如果是相对路径，转换为绝对路径
+            if not os.path.isabs(db_path):
+                db_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    db_path
+                )
+            
             self._db = init_db(db_path)
         return self._db
     
@@ -70,6 +89,81 @@ class FeedService(BaseService):
         """获取服务器配置"""
         config = self._get_config()
         return config.get('server', {})
+    
+    def _ensure_group_synced(self, group_id: str) -> bool:
+        """
+        确保 group 已同步到 FeedManager
+        
+        检查 group 是否在 FeedManager 中存在，如果不存在则从数据库同步。
+        如果已存在但 link 为空，也会更新 group 信息。
+        
+        Args:
+            group_id: Group ID
+            
+        Returns:
+            是否成功同步（True 表示 group 现在在 FeedManager 中可用）
+        """
+        manager = self._get_feed_manager()
+        fm_group = manager.get_group(group_id)
+        
+        # 检查是否已在内存中
+        if group_id in self._synced_groups and fm_group is not None:
+            # 如果 link 为空，更新 group 信息
+            if not fm_group.link:
+                return self._sync_group_to_feed_manager(group_id)
+            return True
+        
+        # 检查 FeedManager 是否已从磁盘加载
+        if fm_group is not None:
+            # 如果 link 为空，更新 group 信息
+            if not fm_group.link:
+                return self._sync_group_to_feed_manager(group_id)
+            self._synced_groups.add(group_id)
+            return True
+        
+        # 从数据库同步
+        return self._sync_group_to_feed_manager(group_id)
+    
+    def _sync_group_to_feed_manager(self, group_id: str) -> bool:
+        """
+        从数据库同步 group 到 FeedManager
+        
+        Args:
+            group_id: Group ID
+            
+        Returns:
+            是否成功同步
+        """
+        try:
+            db = self._get_db()
+            group = db.get_group(group_id)
+            
+            if not group:
+                return False
+            
+            manager = self._get_feed_manager()
+            
+            # 构建 group_data 字典
+            # 注意：数据库 Group 使用 name 字段，而 FeedManager 使用 title
+            # 数据库 Group 没有 link 字段，使用默认的 RSS 订阅链接
+            group_data = {
+                'title': group.name,
+                'link': f'https://rss2pod.example.com/groups/{group.id}',  # 默认链接
+                'description': group.description or f'Podcast feed for {group.name}',
+                'language': 'zh-cn',
+                'author': 'RSS2Pod',
+                'image': '',
+                'category': ''
+            }
+            
+            # 使用 FeedManager 的 sync_group 方法
+            manager.sync_group(group_id, group_data)
+            self._synced_groups.add(group_id)
+            return True
+            
+        except Exception as e:
+            # 静默失败，让调用方处理
+            return False
     
     def get_group_episodes(self, group_id: str, limit: int = 50) -> List[Any]:
         """
@@ -100,15 +194,10 @@ class FeedService(BaseService):
             group_id: Group ID
             
         Returns:
-            Group 对象
+            Group 对象（数据库模型）
         """
-        # 优先使用 FeedManager 的数据（与 pipeline 一致）
-        manager = self._get_feed_manager()
-        group = manager.get_group(group_id)
-        if group:
-            return group
-        
-        # 降级为数据库查询
+        # 直接返回数据库的 Group 对象，以确保包含所有业务属性
+        # （如 enabled, trigger_type, trigger_config 等）
         db = self._get_db()
         return db.get_group(group_id)
     
@@ -165,6 +254,14 @@ class FeedService(BaseService):
         try:
             from feed.feed_manager import Episode as FeedEpisode
             
+            # 关键修复：确保 group 已同步到 FeedManager
+            # 这是解决 "Group not found" 错误的核心逻辑
+            if not self._ensure_group_synced(group_id):
+                return ServiceResult(
+                    success=False,
+                    error_message=f'Group {group_id} 在数据库中不存在'
+                )
+            
             # 从字典创建 Episode
             episode = FeedEpisode(
                 id=episode_data.get('id'),
@@ -216,15 +313,14 @@ class FeedService(BaseService):
             ServiceResult，包含 feed 路径
         """
         try:
-            manager = self._get_feed_manager()
-            
-            # 检查 group 是否存在
-            group = manager.get_group(group_id)
-            if not group:
+            # 关键修复：确保 group 已同步到 FeedManager
+            if not self._ensure_group_synced(group_id):
                 return ServiceResult(
                     success=False,
-                    error_message=f'Group {group_id} 不存在'
+                    error_message=f'Group {group_id} 在数据库中不存在'
                 )
+            
+            manager = self._get_feed_manager()
             
             # 检查是否有 episodes
             episodes = manager.get_episodes(group_id)
