@@ -854,3 +854,163 @@ python -m rss2pod.cli assets cleanup <group_id> --all
 3. **LLM 判断触发完善** - 主题集中度判断逻辑
 4. **全文检索** - 文章全文搜索功能
 5. **播放统计** - 记录 Feed 下载/播放次数
+
+---
+
+## 二十、REST API 实现
+
+### 20.1 FastAPI 后端
+
+项目实现了基于 FastAPI 的 REST API 接口：
+
+- **API 端点** (`rss2pod/web/api.py`)：
+  - `GET /groups` - 获取 Group 列表
+  - `GET /groups/{group_id}` - 获取 Group 详情
+  - `POST /groups/{group_id}/trigger` - 触发生成
+  - `GET /groups/{group_id}/episodes` - 获取 Episode 列表
+  - `GET /groups/{group_id}/feed-url` - 获取 RSS Feed URL
+  - `GET /health` - 健康检查
+
+- **RSS 接口** (`rss2pod/web/rss.py`)：
+  - `GET /rss/{group_id}.xml` - 获取 Podcast RSS Feed
+
+- **Web 应用** (`rss2pod/web/app.py`)：
+  - FastAPI 应用入口
+  - 静态文件挂载
+
+### 20.2 Web 前端
+
+项目包含简单的前端界面：
+
+- **静态资源** (`rss2pod/web/static/`)：
+  - `index.html` - 主页面
+  - `app.js` - 前端 JavaScript
+  - `style.css` - 样式文件
+
+### 20.3 服务层扩展
+
+除第十七章描述的 8 个服务外，实际实现了更多服务模块：
+
+| 服务模块 | 说明 |
+|----------|------|
+| `FeedService` | Feed 生成和发布服务 |
+| `StateService` | 状态管理服务 |
+| `LoggingService` | 日志服务 |
+| `DatabaseService` | 数据库操作服务 |
+
+---
+
+## 二十一、Pipeline 服务模块
+
+### 21.1 Pipeline 模块结构
+
+`services/pipeline/` 目录包含完整的管道服务：
+
+- **service.py** - `PipelineService` 管道服务类
+- **pipeline_orchestrator.py** - `PipelineOrchestrator` 管道编排器
+- **group_processor.py** - `GroupProcessor` Group 处理器
+- **models.py** - 数据模型定义
+
+### 21.2 便捷函数
+
+提供了模块级便捷函数：
+
+```python
+from services.pipeline.service import run_pipeline, run_pipeline_sync
+from services.pipeline.group_processor import GroupProcessor
+```
+
+---
+
+## 二十二、触发器命令
+
+### 22.1 CLI 触发器管理
+
+新增 `trigger` 命令组用于管理触发器：
+
+```bash
+# 查看触发器状态
+python -m rss2pod.cli trigger status <组 ID>
+
+# 设置触发类型
+python -m rss2pod.cli trigger set <组 ID> --type=time
+python -m rss2pod.cli trigger set <组 ID> --type=count
+python -m rss2pod.cli trigger set <组 ID> --type=llm_judgment
+
+# 设置 Cron 表达式
+python -m rss2pod.cli trigger set <组 ID> --cron="0 9 * * *"
+
+# 设置数量阈值
+python -m rss2pod.cli trigger set <组 ID> --threshold=10
+
+# 禁用触发器
+python -m rss2pod.cli trigger disable <组 ID>
+```
+
+---
+
+## 二十三、版本演进
+
+### 23.1 版本历史
+
+| 版本 | 日期 | 主要变更 |
+|------|------|----------|
+| v1.0.0 | - | 初始版本 |
+| v2.0.0 | 2026-03-08 | 重构 fever 命令组 |
+| v2.1.0 | 2026-03-08 | 重构 fever/source 命令 |
+| v2.2.0 | 2026-03-08 | 新增 Prompt 管理系统 |
+| v2.3.0 | 2026-03-08 | 新增服务层架构 |
+| v2.4.0 | 2026-03-09 | 新增分段 TTS 和资源管理 |
+| v2.5.0 | 2026-03-12 | 新增 REST API 和 Web 界面 |
+
+### 23.2 完成状态总结
+
+截至 v2.5.0，项目的完整功能矩阵：
+
+| 功能模块 | 状态 | 说明 |
+|----------|------|------|
+| RSS 采集层 | ✅ | Fever API 客户端、本地缓存 |
+| 数据库层 | ✅ | 9 个核心数据表 |
+| LLM 处理层 | ✅ | DashScope 客户端、摘要生成 |
+| 脚本生成层 | ✅ | ScriptEngine、单人/双人模式 |
+| TTS 层 | ✅ | SiliconFlow 适配、分段合成 |
+| Feed 发布层 | ✅ | python-feedgen 集成、REST API |
+| 服务层 | ✅ | 12 个服务模块 |
+| Orchestrator | ✅ | 管道编排、状态管理 |
+| REST API | ✅ | FastAPI 端点实现 |
+| Web 界面 | ✅ | HTML/JS/CSS 静态页面 |
+| 触发机制 | 🟡 | 时间/数量触发完成，LLM 触发待完善 |
+| 音频清理 | 🟡 | 基础支持，自动清理待完善 |
+
+---
+
+## 二十四、项目当前进度总结
+
+### 24.1 已完成功能
+
+项目已完成的功能远超出原始设计，主要包括：
+
+1. **核心管道** - 7 阶段完整处理流程
+2. **服务层架构** - 12 个服务模块的统一封装
+3. **REST API** - FastAPI 实现的完整 API 端点
+4. **Web 界面** - 简单的前端管理界面
+5. **CLI 工具** - 完整的命令行管理工具
+6. **资源管理** - Episode 中间文件管理
+7. **分段 TTS** - 解决长音频时长限制
+8. **Prompt 管理** - 全局/组别覆盖配置
+
+### 24.2 待完成功能
+
+1. **音频自动清理** - 按过期时间自动删除
+2. **条件逻辑组合** - AND/OR 触发条件
+3. **LLM 判断触发完善** - 主题集中度判断
+4. **全文检索** - 文章搜索功能
+5. **播放统计** - 下载/播放计数
+6. **Web 界面完善** - 完整的管理界面（当前仅基础）
+
+### 24.3 下一步建议
+
+1. 完善音频自动清理功能
+2. 实现触发条件 AND/OR 组合
+3. 开发完整的 Web 管理界面（NiceGUI）
+4. 添加全文检索功能

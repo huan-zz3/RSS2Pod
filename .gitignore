@@ -40,6 +40,7 @@ config.json.bak
 rss2pod.db
 rss2pod/rss2pod.db
 rss2pod/data
+rss2pod/sources.json
 
 # 数据和缓存
 *.db
@@ -67,3 +68,4 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+rss2pod/FEED_SERVICE_REFACTOR_PLAN.md
