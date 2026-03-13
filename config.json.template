@@ -1,0 +1,37 @@
+{
+  "database": {
+    "path": "./data/rss2pod.db"
+  },
+  "fever": {
+    "baseUrl": "https://your-ttrss-instance/plugins/fever",
+    "email": "your-email",
+    "password": "your-password"
+  },
+  "llm": {
+    "provider": "dashscope",
+    "apiKey": "your-dashscope-api-key",
+    "model": "qwen3.5-plus"
+  },
+  "tts": {
+    "provider": "siliconflow",
+    "apiKey": "your-siliconflow-api-key",
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "voice": "claire",
+    "baseUrl": "https://api.siliconflow.cn/v1"
+  },
+  "scheduler": {
+    "checkInterval": 60,
+    "maxConcurrentGroups": 3
+  },
+  "logging": {
+    "level": "info"
+  },
+  "media": {
+    "basePath": "./data/media",
+    "retentionDays": 30
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000
+  }
+}
