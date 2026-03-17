@@ -8,7 +8,10 @@ import { DatabaseManager } from '../infrastructure/database/DatabaseManager.js';
 import { GroupRepository } from '../repositories/GroupRepository.js';
 import { PodcastFeedGenerator } from '../services/feed/PodcastFeedGenerator.js';
 
-const logger = pino({ name: 'api' });
+const logger = pino({
+  name: 'api',
+  timestamp: () => `,"time":"${new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00')}"`,
+});
 
 export interface ApiOptions {
   host?: string;
@@ -18,8 +21,8 @@ export interface ApiOptions {
 export async function createApiServer(options: ApiOptions = {}) {
   const config = loadConfig();
   
-  const host = options.host || config.server.host;
-  const port = options.port || config.server.port;
+  const host = options.host || config.api.host;
+  const port = options.port || config.api.port;
 
   const fastify = Fastify({
     logger: {
@@ -80,7 +83,7 @@ export async function createApiServer(options: ApiOptions = {}) {
       return reply.code(404).send({ error: 'Group not found' });
     }
 
-    const feedUrl = `http://${host}:${port}/api/feeds/${groupId}`;
+    const baseUrl = config.api.baseUrl;
     
     const db = dbManager.getDb();
     const episodes = db.prepare(`
@@ -103,7 +106,7 @@ export async function createApiServer(options: ApiOptions = {}) {
         title: ep.title,
         description: JSON.parse(ep.script).segments?.[0]?.text || ep.title,
         enclosure: {
-          url: `http://${host}:${port}/api/media/${ep.audio_path}`,
+          url: `${baseUrl}/api/media/${ep.audio_path}`,
           length: 0,
           type: 'audio/mpeg',
         },
@@ -116,7 +119,7 @@ export async function createApiServer(options: ApiOptions = {}) {
       title: group.name,
       description: group.description || `${group.name} Podcast`,
       imageUrl: '',
-      siteUrl: feedUrl,
+      siteUrl: `${baseUrl}/api/feeds/${groupId}`,
       author: group.name,
       itunesAuthor: group.name,
       itunesExplicit: 'no' as const,
@@ -187,4 +190,14 @@ export async function createApiServer(options: ApiOptions = {}) {
       logger.info('API server closed');
     },
   };
+}
+
+// Auto-start when executed directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  createApiServer().then(async (server) => {
+    await server.start();
+  }).catch((error) => {
+    logger.error({ error }, 'Failed to start API server');
+    process.exit(1);
+  });
 }

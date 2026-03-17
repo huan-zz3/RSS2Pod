@@ -3,7 +3,10 @@ import { createHash } from 'crypto';
 import { z } from 'zod';
 import pino from 'pino';
 
-const logger = pino({ name: 'fever-client' });
+const logger = pino({
+  name: 'fever-client',
+  timestamp: () => `,"time":"${new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00')}"`,
+});
 
 /**
  * Fever API response schemas
@@ -34,7 +37,7 @@ const ItemSchema = z.object({
   feed_id: z.number(),
   is_read: z.number(),
   is_saved: z.number(),
-  created_on: z.number(),
+  created_on: z.number().optional(),
 });
 
 const FeverFeedsResponse = FeverAuthSchema.extend({
@@ -210,7 +213,11 @@ export class FeverClient {
     const params: Record<string, string | number> = { items: 1 };
     
     if (options?.sinceId) params.since_id = options.sinceId;
-    if (options?.maxId) params.max_id = options.maxId;
+    if (options?.maxId !== undefined) {
+      params.max_id = options.maxId;
+    } else {
+      params.max_id = 2147483647;
+    }
     if (options?.withIds?.length) {
       params.with_ids = options.withIds.slice(0, 50).join(',');
     }
@@ -226,7 +233,7 @@ export class FeverClient {
       feedId: item.feed_id,
       isRead: item.is_read === 1,
       isSaved: item.is_saved === 1,
-      createdOn: new Date(item.created_on * 1000),
+      createdOn: item.created_on ? new Date(item.created_on * 1000) : new Date(),
     }));
   }
 
@@ -261,6 +268,20 @@ export class FeverClient {
    */
   async markAsRead(itemId: number): Promise<void> {
     await this.post({ mark: 'item', as: 'read', id: itemId.toString() });
+  }
+
+  /**
+   * Mark multiple items as read (batch operation)
+   */
+  async markItemsAsRead(itemIds: number[]): Promise<void> {
+    if (itemIds.length === 0) return;
+    
+    // Fever API supports comma-separated IDs for batch operations
+    await this.post({ 
+      mark: 'items', 
+      as: 'read', 
+      id: itemIds.join(','), 
+    });
   }
 
   /**

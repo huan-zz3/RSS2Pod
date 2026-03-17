@@ -9,15 +9,21 @@ export interface GroupEditProps {
   onBack: () => void;
 }
 
-type EditField = 'name' | 'enabled' | 'triggerType' | 'sourceIds';
+type EditField = 'name' | 'enabled' | 'triggerType' | 'sourceIds' | 'triggerCron' | 'triggerThreshold' | 'triggerLlmEnabled' | 'learningMode';
 
 interface GroupEditData {
   id: string;
   name: string;
   enabled: boolean;
   triggerType: string;
+  triggerConfig: {
+    cron?: string;
+    threshold?: number;
+    llmEnabled?: boolean;
+  };
   sourceIds: string[];
   sourceCount: number;
+  learningMode: 'normal' | 'word_explanation' | 'sentence_translation';
 }
 
 export function GroupEdit({ groupId, onBack }: GroupEditProps) {
@@ -41,8 +47,14 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
           name: g.name,
           enabled: g.enabled,
           triggerType: g.triggerType,
+          triggerConfig: {
+            cron: g.triggerConfig?.cron || '',
+            threshold: g.triggerConfig?.threshold || 10,
+            llmEnabled: g.triggerConfig?.llmEnabled ?? false,
+          },
           sourceIds: g.sourceIds || [],
           sourceCount: g.sourceCount,
+          learningMode: (g as any).learningMode || 'normal',
         });
       }
       setError(null);
@@ -57,8 +69,11 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
     if (currentField) {
       if (key.escape) {
         setCurrentField(null);
-      } else if (key.return) {
+        return;
+      }
+      if (key.return) {
         handleFieldSubmit();
+        return;
       }
       return;
     }
@@ -77,6 +92,18 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
     } else if (input === '4' && group) {
       setCurrentField('sourceIds');
       setEditValue(group.sourceIds.join(','));
+    } else if (input === '5' && group) {
+      setCurrentField('triggerCron');
+      setEditValue(group.triggerConfig.cron || '');
+    } else if (input === '6' && group) {
+      setCurrentField('triggerThreshold');
+      setEditValue(String(group.triggerConfig.threshold || 10));
+    } else if (input === '7' && group) {
+      setCurrentField('triggerLlmEnabled');
+      setEditValue(group.triggerConfig.llmEnabled ? 'true' : 'false');
+    } else if (input === '8' && group) {
+      setCurrentField('learningMode');
+      setEditValue(group.learningMode);
     } else if (input === 's') {
       handleSave();
     }
@@ -85,21 +112,53 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
   const handleFieldSubmit = () => {
     if (!currentField || !group) return;
     
+    let updatedGroup = { ...group };
+    
     switch (currentField) {
       case 'name':
-        group.name = editValue.trim();
+        updatedGroup = { ...updatedGroup, name: editValue.trim() };
         break;
       case 'enabled':
-        group.enabled = editValue.toLowerCase() === 'true';
+        updatedGroup = { ...updatedGroup, enabled: editValue.toLowerCase() === 'true' };
         break;
       case 'triggerType':
-        group.triggerType = editValue.trim();
+        updatedGroup = { ...updatedGroup, triggerType: editValue.trim() };
         break;
-      case 'sourceIds':
-        group.sourceIds = editValue.split(',').map((s: string) => s.trim()).filter((s: string) => s);
-        group.sourceCount = group.sourceIds.length;
+      case 'sourceIds': {
+        const newSourceIds = editValue.split(',').map((s: string) => s.trim()).filter((s: string) => s);
+        updatedGroup = { ...updatedGroup, sourceIds: newSourceIds, sourceCount: newSourceIds.length };
         break;
+      }
+      case 'triggerCron':
+        updatedGroup = { ...updatedGroup, triggerConfig: { ...updatedGroup.triggerConfig, cron: editValue.trim() } };
+        break;
+      case 'triggerThreshold':
+        updatedGroup = { ...updatedGroup, triggerConfig: { ...updatedGroup.triggerConfig, threshold: parseInt(editValue, 10) || 10 } };
+        break;
+      case 'triggerLlmEnabled':
+        updatedGroup = { ...updatedGroup, triggerConfig: { ...updatedGroup.triggerConfig, llmEnabled: editValue.toLowerCase() === 'true' } };
+        break;
+      case 'learningMode': {
+        const modeMap: Record<string, 'normal' | 'word_explanation' | 'sentence_translation'> = {
+          'normal': 'normal',
+          'n': 'normal',
+          'word_explanation': 'word_explanation',
+          'word': 'word_explanation',
+          'w': 'word_explanation',
+          'sentence_translation': 'sentence_translation',
+          'sentence': 'sentence_translation',
+          's': 'sentence_translation',
+        };
+        const inputKey = editValue.toLowerCase().trim();
+        if (!modeMap[inputKey]) {
+          setError(`Invalid learning mode. Valid: normal (n), word (w), sentence (s)`);
+          return;
+        }
+        updatedGroup = { ...updatedGroup, learningMode: modeMap[inputKey] };
+        break;
+      }
     }
+    setGroup(updatedGroup);
     setCurrentField(null);
   };
 
@@ -111,6 +170,12 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
         enabled: group.enabled,
         triggerType: group.triggerType,
         sourceIds: group.sourceIds,
+        triggerConfig: {
+          cron: group.triggerConfig.cron || undefined,
+          threshold: group.triggerConfig.threshold || undefined,
+          llmEnabled: group.triggerConfig.llmEnabled !== undefined ? group.triggerConfig.llmEnabled : undefined,
+        },
+        learningMode: group.learningMode,
       });
       onBack();
     } catch (err) {
@@ -160,12 +225,22 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
       enabled: 'Enabled (true/false)',
       triggerType: 'Trigger Type (time/count/llm/mixed)',
       sourceIds: 'Source IDs (comma-separated)',
+      triggerCron: 'Cron Expression (e.g., 0 9 * * *)',
+      triggerThreshold: 'Article Threshold',
+      triggerLlmEnabled: 'LLM Trigger Enabled (true/false)',
+      learningMode: 'Learning Mode (normal/word/sentence)',
     };
 
     const placeholder = currentField === 'sourceIds' 
       ? 'e.g., 62,48,63' 
-      : currentField === 'enabled'
+      : currentField === 'enabled' || currentField === 'triggerLlmEnabled'
       ? 'true or false'
+      : currentField === 'triggerCron'
+      ? 'e.g., 0 9 * * * (every day at 9 AM)'
+      : currentField === 'triggerThreshold'
+      ? 'e.g., 10 (trigger when 10 articles are unprocessed)'
+      : currentField === 'learningMode'
+      ? 'normal (n), word explanation (w), sentence translation (s)'
       : '';
 
     return (
@@ -213,9 +288,25 @@ export function GroupEdit({ groupId, onBack }: GroupEditProps) {
             <Text dimColor>   IDs: {group.sourceIds.join(', ')}</Text>
           </Box>
         )}
+        <Box>
+          <Text color="cyan">5. Cron:</Text>
+          <Text> {group.triggerConfig.cron || '(not set)'}</Text>
+        </Box>
+        <Box>
+          <Text color="cyan">6. Threshold:</Text>
+          <Text> {group.triggerConfig.threshold ?? 10}</Text>
+        </Box>
+        <Box>
+          <Text color="cyan">7. LLM Enabled:</Text>
+          <Text> {group.triggerConfig.llmEnabled ? '✓' : '✗'}</Text>
+        </Box>
+        <Box>
+          <Text color="cyan">8. Learning Mode:</Text>
+          <Text> {group.learningMode === 'normal' ? 'Normal' : group.learningMode === 'word_explanation' ? 'Word Explanation' : 'Sentence Translation'}</Text>
+        </Box>
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>1-4 Edit field  s Save  b Back</Text>
+        <Text dimColor>1-8 Edit field  s Save  b Back</Text>
       </Box>
     </Box>
   );

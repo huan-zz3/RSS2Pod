@@ -2,6 +2,8 @@
 
 RSS 转播客转换器，具备 AI 驱动的内容增强功能。
 
+**Tech Stack:** TypeScript + Node.js + ESM + Fastify + SQLite + LLM (DashScope) + TTS (SiliconFlow) + React Ink (TUI) + node-cron
+
 ## 快速开始
 
 ### TUI 交互界面（推荐）
@@ -69,16 +71,70 @@ TUI 提供交互式界面，支持：
 
 **TUI 组件:**
 - 6 个可复用 UI 组件（Select, Input, Table, ProgressBar, Loading, ConfirmDialog）
-- 4 个界面组件（MainMenu, SystemStatus, GroupManagement, Placeholder）
+- 11 个界面组件（MainMenu, SystemStatus, GroupManagement, GroupEdit, Generation, FeverAPI, LLMDebug, TTSDebug, Configuration, Sources, Placeholder）
 - 7 个命令处理器模块（连接所有后端功能）
 - 完整的状态管理和导航系统
 
-## CLI 命令（32 个命令）
+## CLI 命令（33 个命令）
+
+**完整命令列表:**
+
+```bash
+npm run cli -- -h
+
+# 输出:
+Usage: rss2pod [options] [command]
+
+RSS to Podcast Converter with AI Enhancement
+
+Options:
+  -V, --version                            output the version number
+  -h, --help                               display help for command
+
+Commands:
+  init                                     Create configuration template
+  db:init                                  Initialize the database
+  db:stats                                 Show database statistics
+  status                                   Show system status
+  config:show                              Show current configuration (without secrets)
+  config:set <key> <value>                 Set configuration value
+  config:validate                          Validate configuration file with Zod schema
+  group:list [options]                     List all groups
+  group:show <id>                          Show group details (supports index or ID)
+  group:create [options] <name>            Create a new group
+  group:edit [options] <id>                Edit group configuration (supports index or ID)
+  group:delete <id>                        Delete a group (supports index or ID)
+  group:enable <id>                        Enable a group (supports index or ID)
+  group:disable <id>                       Disable a group (supports index or ID)
+  source:list                              List all feeds
+  source:show <id>                         Show feed details
+  fever:test                               Test Fever API connection
+  fever:sync-feeds                         Sync feed list
+  fever:cache-articles [options]           Cache articles to local database
+  sync:run [groupId]                       Manually trigger article sync (optionally for specific group)
+  sync:status                              Show sync service status and configuration
+  llm:test                                 Test LLM connection
+  llm:chat <prompt>                        Chat with LLM for testing
+  tts:test                                 Test TTS connection
+  generate:run <groupId>                   Run generation pipeline for a group (supports index or ID)
+  generate:history                         Show generation history
+  pipeline:runs [options] <groupId>        View pipeline execution history for a group (supports index or ID)
+  episode:list [options] <groupId>         List generated podcast episodes for a group (supports index or ID)
+  trigger:status <groupId>                 Show trigger status for a group (supports index or ID)
+  article:unprocessed [options] <groupId>  List unprocessed articles for a group (supports index or ID)
+  trigger:check <groupId>                  Check if trigger conditions are met for a group (supports index or ID)
+  scheduler:start                          Start the scheduler service
+  scheduler:stop                           Stop the scheduler service
+  scheduler:status                         Display scheduler configuration and enabled groups
+  pipeline:stop <runId>                    Stop a running pipeline by run ID
+  help [command]                           display help for command
+```
 
 ### 系统状态
 ```bash
 npm run cli -- status          # 显示系统状态和统计
 npm run cli -- db:stats        # 数据库统计
+npm run cli -- sync:status     # 显示同步服务状态和配置
 ```
 
 ### 配置管理
@@ -127,6 +183,12 @@ npm run cli -- fever:sync-feeds        # 同步订阅源列表
 npm run cli -- fever:cache-articles -l 100  # 缓存文章
 ```
 
+### 同步服务
+```bash
+npm run cli -- sync:run [groupId]      # 手动触发文章同步（可选指定组）
+npm run cli -- sync:status             # 显示同步服务状态和配置
+```
+
 ### LLM 调试
 ```bash
 npm run cli -- llm:test                # 测试 LLM 连接
@@ -147,11 +209,11 @@ npm run cli -- pipeline:runs <groupId>          # 查看流水线历史（按组
 npm run cli -- pipeline:stop <runId>            # 停止正在运行的流水线
 npm run cli -- episode:list <groupId>           # 列出播客节目
 npm run cli -- article:unprocessed <groupId>    # 查看未处理文章
+npm run cli -- trigger:check <groupId>          # 手动检查触发条件
 ```
 
 ### 调度器
 ```bash
-npm run cli -- trigger:check <groupId>    # 手动检查触发条件
 npm run cli -- scheduler:start            # 启动调度器服务
 npm run cli -- scheduler:stop             # 停止调度器服务
 npm run cli -- scheduler:status           # 显示调度器配置和启用的组
@@ -161,10 +223,10 @@ npm run cli -- scheduler:status           # 显示调度器配置和启用的组
 
 ```
 src/
-├── cli/                        # 命令行界面（32 个命令）
-├── tui/                        # TUI 交互界面
+├── cli/                        # 命令行界面（33 个命令）
+├── tui/                        # TUI 交互界面 (React Ink)
 │   ├── components/             # 可复用 UI 组件 (6 个)
-│   ├── screens/                # 界面组件 (4 个)
+│   ├── screens/                # 界面组件 (11 个)
 │   ├── commands/               # 命令处理器 (7 个模块)
 │   ├── hooks/                  # 自定义 React hooks
 │   └── state/                  # 状态管理
@@ -172,17 +234,18 @@ src/
 ├── features/
 │   ├── events/                 # 事件总线（事件驱动架构）
 │   ├── pipeline/               # 6 阶段流水线编排器
-│   └── ...                     # 其他功能（TTS、LLM 等）
+│   ├── scheduler/              # 调度器（4 种触发器）
+│   └── sync/                   # 独立同步服务（600s 间隔）
 ├── infrastructure/
-│   ├── database/               # SQLite 数据库层
-│   └── external/               # 外部 API 客户端（Fever 等）
+│   ├── database/               # SQLite 数据库层（9 张表）
+│   └── external/               # 外部 API 客户端（Fever）
 ├── services/
 │   ├── llm/                    # LLM 服务（DashScope）
 │   ├── tts/                    # TTS 服务（SiliconFlow）
 │   └── feed/                   # 播客 Feed 生成器
-├── repositories/               # 数据访问层
+├── repositories/               # 数据访问层（SQLite CRUD）
 └── shared/
-    ├── config/                 # 配置管理
+    ├── config/                 # 配置管理（Zod 验证）
     └── types/                  # TypeScript 类型定义
 ```
 
@@ -200,20 +263,38 @@ src/
   "llm": {
     "provider": "dashscope",
     "apiKey": "your-key",
-    "model": "Qwen/Qwen2.5-72B-Instruct-128K"
+    "model": "qwen3.5-plus",
+    "maxTokens": 2000,
+    "temperature": 0.7
   },
   "tts": {
     "provider": "siliconflow",
     "apiKey": "your-key",
     "model": "FunAudioLLM/CosyVoice2-0.5B",
-    "voice": "claire"
+    "voice": "claire",
+    "baseUrl": "https://api.siliconflow.cn/v1"
   },
   "scheduler": {
     "checkInterval": 60,
     "maxConcurrentGroups": 3
+  },
+  "sync": {
+    "enabled": true,
+    "interval": 600,
+    "maxArticlesPerSync": 100
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "baseUrl": "http://localhost:3000"
   }
 }
 ```
+
+**配置说明**:
+- `api.baseUrl` - 控制 Feed 生成的公开 URL（生产环境改为你的域名）
+- `sync.interval` - 同步间隔（秒），默认 600 秒（10 分钟）
+- `scheduler.checkInterval` - 触发器检查间隔（秒），默认 60 秒
 
 ### 组触发器配置
 
@@ -286,7 +367,7 @@ npm run lint
 npm run test
 ```
 
-## 数据库模式
+## 数据库模式（9 张表）
 
 | 表名 | 说明 |
 |------|------|
@@ -297,6 +378,8 @@ npm run test
 | `group_summaries` | 组级摘要 |
 | `pipeline_runs` | 执行历史 |
 | `processing_state` | 并发锁 |
+| `feeds` | 订阅源列表 |
+| `schema_info` | 模式版本控制 |
 
 ## 常用工作流
 
@@ -308,10 +391,13 @@ npm run tui
 
 # 2. 在 TUI 中:
 #    - 按 1 查看系统状态（版本、数据库、API 配置）
+#    - 按 2 配置管理
 #    - 按 3 管理组（创建、编辑、删除、启用/禁用）
-#    - 按 5 测试 Fever API（连接测试、同步订阅源）
-#    - 按 6/7 测试 LLM/TTS
-#    - 按 8 运行流水线、查看历史
+#    - 按 4 订阅源管理
+#    - 按 5 测试 Fever API（连接测试、同步订阅源、缓存文章）
+#    - 按 6 测试 LLM（连接测试、对话）
+#    - 按 7 测试 TTS（连接测试）
+#    - 按 8 生成流程（运行流水线、查看历史、触发器状态）
 #    - 按 b 返回主菜单
 #    - 按 q 退出 TUI
 ```
@@ -322,22 +408,24 @@ npm run tui
 - ✅ 无需记忆命令
 - ✅ 键盘快捷键快速操作
 - ✅ 确认对话框防止误操作
+- ✅ 进度条显示流水线执行状态
 
 ### CLI 工作流
 
 ```bash
 # 1. 初始设置
-npm run cli -- init
-npm run cli -- db:init
-npm run cli -- fever:test
+npm run cli -- init             # 创建配置模板
+npm run cli -- db:init          # 初始化数据库
+npm run cli -- fever:test       # 测试 Fever API 连接
 
 # 2. 查看订阅源
 npm run cli -- source:list
 
 # 3. 创建组（配置触发器）
-npm run cli -- group:create "科技新闻" -s "1,2,3" -t dual
+npm run cli -- group:create "科技新闻" -s "1,2,3"
 npm run cli -- group:edit <groupId> -t count --threshold 10  # 数量触发
 npm run cli -- group:edit <groupId> -t time --cron "0 9 * * *"  # 时间触发
+npm run cli -- group:edit <groupId> -t llm --llm-enabled true  # LLM 触发
 
 # 4. 缓存文章
 npm run cli -- fever:cache-articles -l 50
@@ -357,6 +445,7 @@ npm run cli -- generate:run <groupId>
 
 # 9. 查看历史
 npm run cli -- generate:history
+npm run cli -- pipeline:runs <groupId>
 
 # 10. 启动 API 服务器
 npm run api

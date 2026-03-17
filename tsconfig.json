@@ -19,6 +19,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     
+    // JSX for React/Ink
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    
     // Type declarations
     "declaration": true,
     "declarationMap": true,

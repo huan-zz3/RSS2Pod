@@ -6,7 +6,7 @@ import { DashScopeService } from '../../services/llm/DashScopeService.js';
 import { SiliconFlowService } from '../../services/tts/SiliconFlowService.js';
 import { PodcastFeedGenerator } from '../../services/feed/PodcastFeedGenerator.js';
 import type { FeedItem, FeedConfig } from '../../services/feed/PodcastFeedGenerator.js';
-import { loadConfig } from '../../shared/config/index.js';
+import { getConfig, loadConfig } from '../../shared/config/index.js';
 import { getEventBus } from '../../features/events/EventBus.js';
 import { join, dirname } from 'path';
 import { mkdirSync, writeFileSync, statSync } from 'fs';
@@ -452,13 +452,16 @@ export class PipelineOrchestrator {
       return;
     }
 
+    const appConfig = getConfig();
+    const baseUrl = appConfig.api.baseUrl;
+    
     const feedGen = new PodcastFeedGenerator();
     const config: FeedConfig = {
       groupId: group.id,
       title: group.name,
       description: group.description || 'Generated podcast feed',
       imageUrl: undefined,
-      siteUrl: 'http://localhost:3000',
+      siteUrl: baseUrl,
       author: 'RSS2Pod',
       itunesAuthor: 'RSS2Pod',
       itunesExplicit: 'no',
@@ -476,7 +479,7 @@ export class PipelineOrchestrator {
         title: episode.title || `${group.name} - ${new Date(episode.pub_date).toLocaleDateString()}`,
         description: scriptContent?.summary || 'Generated episode',
         enclosure: {
-          url: `http://localhost:3000/api/media/${relativePath}`,
+          url: `${baseUrl}/api/media/${relativePath}`,
           length: statSync(episode.audio_path).size,
           type: 'audio/mpeg',
         },

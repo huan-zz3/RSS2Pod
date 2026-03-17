@@ -11,7 +11,7 @@ const logger = pino({
 /**
  * Database schema version
  */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /**
  * Database manager class
@@ -102,6 +102,7 @@ export class DatabaseManager {
         podcast_structure TEXT DEFAULT '{"type":"single"}', -- single or dual
         learning_mode TEXT DEFAULT 'normal', -- normal, word_explanation, sentence_translation
         retention_days INTEGER DEFAULT 30,
+        last_synced_max_id INTEGER DEFAULT 0, -- Incremental sync tracking
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
         updated_at INTEGER DEFAULT (strftime('%s', 'now'))
       );
@@ -253,6 +254,22 @@ export class DatabaseManager {
     
     if (currentVersion < SCHEMA_VERSION) {
       logger.info({ currentVersion, targetVersion: SCHEMA_VERSION }, 'Running migrations');
+      
+      this.db!.transaction(() => {
+        if (currentVersion < 2) {
+          this.db!.exec(`
+            ALTER TABLE groups ADD COLUMN last_synced_max_id INTEGER DEFAULT 0;
+          `);
+          logger.info('Migration to v2 completed: Added last_synced_max_id column');
+        }
+      })();
+      
+      this.db!.prepare(`
+        INSERT OR REPLACE INTO schema_info (key, value) 
+        VALUES ('version', ?)
+      `).run(SCHEMA_VERSION.toString());
+      
+      logger.info({ newVersion: SCHEMA_VERSION }, 'Migrations completed');
     }
   }
 }

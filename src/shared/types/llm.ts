@@ -5,6 +5,45 @@ export interface LLMConfig {
   baseUrl?: string;
   maxTokens?: number;
   temperature?: number;
+  prompts?: PromptConfig;
+}
+
+export interface PromptConfig {
+  summary?: SummaryPromptConfig;
+  script?: ScriptPromptConfig;
+}
+
+export interface SummaryPromptConfig {
+  systemRole?: string;
+  styles?: Record<string, PromptStyleConfig>;
+}
+
+export interface ScriptPromptConfig {
+  systemRole?: string;
+  structures?: Record<string, PromptStructureConfig>;
+  learningModes?: Record<string, PromptLearningModeConfig>;
+  requirements?: string[];
+}
+
+export interface PromptStyleConfig {
+  instruction: string;
+  requirements?: string[];
+}
+
+export interface PromptStructureConfig {
+  instruction: string;
+  format?: 'monologue' | 'dialogue';
+  speakerLabels?: {
+    en?: string[];
+    zh?: string[];
+  };
+}
+
+export interface PromptLearningModeConfig {
+  instruction: string;
+  includeTranslations?: boolean;
+  includeWordExplanations?: boolean;
+  translationLanguage?: string;
 }
 
 export interface LLMResponse {

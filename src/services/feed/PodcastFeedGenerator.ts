@@ -3,23 +3,30 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { createRequire } from 'module';
+import { getConfig } from '../../shared/config/index.js';
 
-// Import the podcast library (v2.x)
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const PodcastLib = require('podcast');
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const PodcastModule: any = require('podcast');
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+const PodcastLib: any = PodcastModule.Podcast;
 
-import { FeedItem, FeedConfig } from '../../shared/types/feed.js';
+import type { FeedItem, FeedConfig } from '../../shared/types/feed.js';
 
 export class PodcastFeedGenerator {
   generateFeed(items: FeedItem[], config: FeedConfig): string {
+    const appConfig = getConfig();
+    const baseUrl = appConfig.api.baseUrl;
+    
     // Build feed options, including iTunes metadata when provided
     const feedOptions: any = {
       title: config.title,
       description: config.description,
       imageUrl: config.imageUrl,
       // The feedUrl should reflect the expected API route for the group
-      feedUrl: `http://localhost:3000/api/feeds/${config.groupId}`,
-      siteUrl: config.siteUrl,
+      feedUrl: `${baseUrl}/api/feeds/${config.groupId}`,
+      siteUrl: config.siteUrl ?? baseUrl,
       author: config.author,
       // iTunes specific metadata
       itunesAuthor: config.itunesAuthor ?? undefined,
@@ -38,7 +45,7 @@ export class PodcastFeedGenerator {
 
     // Attach items
     items.forEach((it) => {
-      (podcast as any).item({
+      (podcast as any).addItem({
         title: it.title,
         description: it.description,
         // Enclosure for the audio file
@@ -65,5 +72,4 @@ export class PodcastFeedGenerator {
 }
 
 export default PodcastFeedGenerator;
-
-export { FeedItem, FeedConfig } from '../../shared/types/feed.js';
+export type { FeedItem, FeedConfig } from '../../shared/types/feed.js';

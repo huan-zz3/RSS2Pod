@@ -41,6 +41,7 @@ export class EventBus {
     this.logger = config.logger ?? pino({
       name: 'eventbus',
       level: process.env.LOG_LEVEL || 'info',
+      timestamp: () => `,"time":"${new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00')}"`,
     });
   }
 

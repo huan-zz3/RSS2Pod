@@ -295,6 +295,7 @@ program
       podcastStructure: { type: options.type as 'single' | 'dual' },
       learningMode: options.learningMode as 'normal' | 'word_explanation' | 'sentence_translation',
       retentionDays: 30,
+      lastSyncedMaxId: 0,
     };
     
     groupRepo.create(group);
@@ -607,15 +608,16 @@ program
 
 program
   .command('sync:run [groupId]')
-  .description('Manually trigger article sync (optionally for specific group)')
+  .description('Manually trigger article sync (optionally for specific group) (supports index or ID)')
   .action(async (groupId) => {
     const config = loadConfig();
     const dbManager = new DatabaseManager(config.database.path);
     dbManager.initialize();
     
+    const db = dbManager.getDb();
     const syncService = new SyncService(
-      new GroupRepository(dbManager.getDb()),
-      new ArticleRepository(dbManager.getDb()),
+      new GroupRepository(db),
+      new ArticleRepository(db),
       new FeverClient(config.fever),
       getEventBus(),
       config.sync,
@@ -623,7 +625,16 @@ program
     
     try {
       if (groupId) {
-        const group = dbManager.getDb().prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined;
+        const resolvedId = resolveGroupId(groupId, db);
+        
+        if (!resolvedId) {
+          logger.error(`Group not found: ${groupId}`);
+          dbManager.close();
+          process.exit(1);
+        }
+        
+        const groupRepo = new GroupRepository(db);
+        const group = groupRepo.findById(resolvedId);
         if (!group) {
           logger.error(`Group not found: ${groupId}`);
           dbManager.close();
@@ -981,6 +992,45 @@ program
         Published: new Date(a.publishedAt).toLocaleString(),
       })));
     }
+    
+    dbManager.close();
+  });
+
+program
+  .command('article:mark-read <groupId>')
+  .description('Mark all cached articles as processed for a group (supports index or ID)')
+  .action((groupId) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const resolvedId = resolveGroupId(groupId, db);
+    
+    if (!resolvedId) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(resolvedId) as Group | undefined;
+    if (!group) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const articleRepo = new ArticleRepository(db);
+    const updatedCount = articleRepo.markAllAsProcessed(resolvedId);
+    
+    if (updatedCount === 0) {
+      logger.info('No cached articles found for this group');
+      dbManager.close();
+      return;
+    }
+    
+    logger.info(`✅ Successfully marked ${updatedCount} articles as processed for group: ${group.name}`);
+    logger.info('💡 Tip: Run "sync:run" to fetch latest unread articles from Fever API');
     
     dbManager.close();
   });

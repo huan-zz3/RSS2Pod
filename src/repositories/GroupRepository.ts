@@ -12,6 +12,7 @@ export interface Group {
   podcastStructure: PodcastStructure;
   learningMode: 'normal' | 'word_explanation' | 'sentence_translation';
   retentionDays: number;
+  lastSyncedMaxId?: number;
 }
 
 export interface TriggerConfig {
@@ -70,6 +71,7 @@ export class GroupRepository {
         podcast_structure = ?,
         learning_mode = ?,
         retention_days = ?,
+        last_synced_max_id = ?,
         updated_at = strftime('%s', 'now')
       WHERE id = ?
     `);
@@ -85,6 +87,7 @@ export class GroupRepository {
       JSON.stringify(group.podcastStructure),
       group.learningMode,
       group.retentionDays,
+      group.lastSyncedMaxId,
       group.id,
     );
   }
@@ -121,6 +124,14 @@ export class GroupRepository {
     `).run(id);
   }
 
+  updateLastSyncedMaxId(groupId: string, maxId: number): void {
+    this.db.prepare(`
+      UPDATE groups 
+      SET last_synced_max_id = ?, updated_at = strftime('%s', 'now') 
+      WHERE id = ?
+    `).run(maxId, groupId);
+  }
+
   private mapRowToGroup(row: Record<string, unknown>): Group {
     return {
       id: row.id as string,
@@ -136,6 +147,7 @@ export class GroupRepository {
       podcastStructure: JSON.parse(row.podcast_structure as string),
       learningMode: row.learning_mode as 'normal' | 'word_explanation' | 'sentence_translation',
       retentionDays: row.retention_days as number,
+      lastSyncedMaxId: (row.last_synced_max_id as number) ?? 0,
     };
   }
 }
