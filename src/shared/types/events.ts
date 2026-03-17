@@ -25,8 +25,6 @@ export interface EventMetadata {
 export type EventType =
   // Pipeline events
   | 'pipeline:started'
-  | 'pipeline:fetch:started'
-  | 'pipeline:fetch:completed'
   | 'pipeline:source-summary:started'
   | 'pipeline:source-summary:completed'
   | 'pipeline:group-aggregate:started'
@@ -34,6 +32,7 @@ export type EventType =
   | 'pipeline:script:started'
   | 'pipeline:script:completed'
   | 'pipeline:audio:started'
+  | 'pipeline:audio:segment-completed'
   | 'pipeline:audio:completed'
   | 'pipeline:episode:started'
   | 'pipeline:episode:completed'
@@ -41,6 +40,12 @@ export type EventType =
   | 'pipeline:feed:completed'
   | 'pipeline:completed'
   | 'pipeline:failed'
+  | 'pipeline:cancelled'
+  
+  // Sync events
+  | 'sync:started'
+  | 'sync:completed'
+  | 'sync:failed'
   
   // Article events
   | 'article:fetched'
@@ -72,7 +77,6 @@ export type EventType =
 
 /** Pipeline stage enumeration */
 export type PipelineStage =
-  | 'fetch'
   | 'source-summary'
   | 'group-aggregate'
   | 'script'
@@ -113,6 +117,14 @@ export interface EpisodeEventPayload {
   scriptPath?: string;
 }
 
+/** Sync event payload */
+export interface SyncEventPayload {
+  groupId?: string;
+  articlesSynced?: number;
+  maxId?: number;
+  error?: string;
+}
+
 /** Error event payload */
 export interface ErrorEventPayload {
   groupId?: string;
@@ -134,8 +146,6 @@ export interface TriggerEventPayload {
 export interface EventPayloadMap {
   // Pipeline
   'pipeline:started': PipelineEventPayload;
-  'pipeline:fetch:started': PipelineEventPayload;
-  'pipeline:fetch:completed': PipelineEventPayload;
   'pipeline:source-summary:started': PipelineEventPayload;
   'pipeline:source-summary:completed': PipelineEventPayload;
   'pipeline:group-aggregate:started': PipelineEventPayload;
@@ -143,6 +153,11 @@ export interface EventPayloadMap {
   'pipeline:script:started': PipelineEventPayload;
   'pipeline:script:completed': PipelineEventPayload;
   'pipeline:audio:started': PipelineEventPayload;
+  'pipeline:audio:segment-completed': PipelineEventPayload & { 
+    segmentIndex: number; 
+    totalSegments: number; 
+    duration: number; 
+  };
   'pipeline:audio:completed': PipelineEventPayload;
   'pipeline:episode:started': PipelineEventPayload;
   'pipeline:episode:completed': PipelineEventPayload;
@@ -150,6 +165,12 @@ export interface EventPayloadMap {
   'pipeline:feed:completed': PipelineEventPayload;
   'pipeline:completed': PipelineEventPayload;
   'pipeline:failed': PipelineEventPayload & { error: string };
+  'pipeline:cancelled': PipelineEventPayload & { completedAt: Date };
+  
+  // Sync
+  'sync:started': SyncEventPayload;
+  'sync:completed': SyncEventPayload & { articlesSynced: number; maxId: number };
+  'sync:failed': SyncEventPayload & { error: string };
   
   // Articles
   'article:fetched': ArticleEventPayload;

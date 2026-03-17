@@ -8,7 +8,12 @@ import { DatabaseManager } from '../infrastructure/database/DatabaseManager.js';
 import { FeverClient } from '../infrastructure/external/FeverClient.js';
 import { PipelineOrchestrator } from '../features/pipeline/PipelineOrchestrator.js';
 import { GroupRepository } from '../repositories/GroupRepository.js';
+import type { Group } from '../repositories/GroupRepository.js';
 import { ArticleRepository } from '../repositories/ArticleRepository.js';
+import { TriggerEvaluator } from '../features/scheduler/TriggerEvaluator.js';
+import { SchedulerService } from '../features/scheduler/SchedulerService.js';
+import { SyncService } from '../features/sync/SyncService.js';
+import { getEventBus } from '../features/events/EventBus.js';
 import pino from 'pino';
 
 const logger = pino({
@@ -158,6 +163,23 @@ program
   });
 
 program
+  .command('config:validate')
+  .description('Validate configuration file with Zod schema')
+  .action(() => {
+    try {
+      loadConfig();
+      logger.info('Configuration is valid');
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.error(`Configuration validation failed: ${error.message}`);
+      } else {
+        logger.error('Configuration validation failed');
+      }
+      process.exit(1);
+    }
+  });
+
+program
   .command('group:list')
   .description('List all groups')
   .option('-e, --enabled', 'Show only enabled groups')
@@ -246,6 +268,7 @@ program
   .option('-d, --description <text>', 'Group description')
   .option('-s, --sources <ids>', 'Comma-separated source IDs')
   .option('-t, --type <type>', 'Podcast type: single or dual', 'single')
+  .option('--learning-mode <mode>', 'English learning mode: normal, word_explanation, sentence_translation', 'normal')
   .action((name, options) => {
     const config = loadConfig();
     const dbManager = new DatabaseManager(config.database.path);
@@ -253,6 +276,13 @@ program
     
     const db = dbManager.getDb();
     const groupRepo = new GroupRepository(db);
+    
+    const validModes = ['normal', 'word_explanation', 'sentence_translation'] as const;
+    if (!validModes.includes(options.learningMode as any)) {
+      logger.error(`Invalid learning mode: ${options.learningMode}. Valid: ${validModes.join(', ')}`);
+      dbManager.close();
+      process.exit(1);
+    }
     
     const group = {
       id: `grp-${Date.now()}`,
@@ -263,7 +293,7 @@ program
       triggerType: 'time' as const,
       triggerConfig: { cron: '0 9 * * *' },
       podcastStructure: { type: options.type as 'single' | 'dual' },
-      learningMode: 'normal' as const,
+      learningMode: options.learningMode as 'normal' | 'word_explanation' | 'sentence_translation',
       retentionDays: 30,
     };
     
@@ -282,6 +312,8 @@ program
   .option('-t, --trigger-type <type>', 'Trigger type: time, count, llm, mixed')
   .option('-c, --trigger-cron <cron>', 'Cron expression (for time trigger)')
   .option('--threshold <number>', 'Article threshold (for count trigger)')
+  .option('--llm-enabled <boolean>', 'Enable LLM trigger (true/false)')
+  .option('--learning-mode <mode>', 'English learning mode: normal, word_explanation, sentence_translation')
   .action(async (id, options) => {
     const config = loadConfig();
     const dbManager = new DatabaseManager(config.database.path);
@@ -328,12 +360,23 @@ program
       group.triggerType = options.triggerType as 'time' | 'count' | 'llm' | 'mixed';
     }
 
-    if (options.triggerCron || options.threshold) {
+    if (options.triggerCron || options.threshold || options.llmEnabled !== undefined) {
       group.triggerConfig = {
         ...group.triggerConfig,
         ...(options.triggerCron ? { cron: options.triggerCron } : {}),
         ...(options.threshold ? { threshold: parseInt(options.threshold, 10) } : {}),
+        ...(options.llmEnabled !== undefined ? { llmEnabled: options.llmEnabled === 'true' } : {}),
       };
+    }
+    
+    if (options.learningMode) {
+      const validModes = ['normal', 'word_explanation', 'sentence_translation'] as const;
+      if (!validModes.includes(options.learningMode as any)) {
+        logger.error(`Invalid learning mode: ${options.learningMode}. Valid: ${validModes.join(', ')}`);
+        dbManager.close();
+        process.exit(1);
+      }
+      group.learningMode = options.learningMode as 'normal' | 'word_explanation' | 'sentence_translation';
     }
     
     groupRepo.update(group);
@@ -345,7 +388,7 @@ program
 program
   .command('group:delete <id>')
   .description('Delete a group (supports index or ID)')
-  .action((id) => {
+  .action(async (id) => {
     const config = loadConfig();
     const dbManager = new DatabaseManager(config.database.path);
     dbManager.initialize();
@@ -368,7 +411,21 @@ program
       process.exit(1);
     }
     
-    groupRepo.delete(id);
+    const mediaDir = join(process.cwd(), 'data', 'media', resolvedId);
+    if (existsSync(mediaDir)) {
+      const { rmSync } = await import('fs');
+      rmSync(mediaDir, { recursive: true, force: true });
+      logger.info(`Media files deleted: ${mediaDir}`);
+    }
+    
+    const feedFile = join(process.cwd(), 'data', 'media', 'feeds', `${resolvedId}.xml`);
+    if (existsSync(feedFile)) {
+      const { rmSync } = await import('fs');
+      rmSync(feedFile, { force: true });
+      logger.info(`Feed file deleted: ${feedFile}`);
+    }
+    
+    groupRepo.delete(resolvedId);
     logger.info(`Group deleted: ${group.name}`);
     
     dbManager.close();
@@ -549,6 +606,70 @@ program
   });
 
 program
+  .command('sync:run [groupId]')
+  .description('Manually trigger article sync (optionally for specific group)')
+  .action(async (groupId) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const syncService = new SyncService(
+      new GroupRepository(dbManager.getDb()),
+      new ArticleRepository(dbManager.getDb()),
+      new FeverClient(config.fever),
+      getEventBus(),
+      config.sync,
+    );
+    
+    try {
+      if (groupId) {
+        const group = dbManager.getDb().prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined;
+        if (!group) {
+          logger.error(`Group not found: ${groupId}`);
+          dbManager.close();
+          process.exit(1);
+        }
+        
+        logger.info(`Syncing articles for group: ${group.name}`);
+        const result = await syncService.syncGroup(group);
+        
+        if (result.synced) {
+          logger.info(`✅ Sync completed: ${result.articlesSynced} articles in ${result.duration}ms (maxId: ${result.maxId})`);
+        } else {
+          logger.error(`❌ Sync failed`);
+          process.exit(1);
+        }
+      } else {
+        logger.info('Syncing all articles...');
+        await syncService.syncAllGroups();
+        logger.info('✅ Sync completed');
+      }
+    } catch (error) {
+      logger.error(`❌ Sync failed: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    } finally {
+      dbManager.close();
+    }
+  });
+
+program
+  .command('sync:status')
+  .description('Show sync service status and configuration')
+  .action(() => {
+    const config = loadConfig();
+    
+    console.log('\n📋 Sync Configuration:');
+    console.table({
+      'Enabled': config.sync.enabled,
+      'Interval (seconds)': config.sync.interval,
+      'Max Articles per Sync': config.sync.maxArticlesPerSync,
+    });
+    
+    console.log('\n💡 Tip: Use "scheduler:start" to start automatic sync');
+    console.log('   Use "sync:run" to manually trigger sync');
+  });
+
+program
   .command('llm:test')
   .description('Test LLM connection')
   .action(async () => {
@@ -625,8 +746,7 @@ program
       process.exit(1);
     }
     
-    const feverClient = new FeverClient(config.fever);
-    const orchestrator = new PipelineOrchestrator(dbManager, feverClient, {
+    const orchestrator = new PipelineOrchestrator(dbManager, {
       maxConcurrentGroups: config.scheduler.maxConcurrentGroups,
     });
     
@@ -684,6 +804,112 @@ program
   });
 
 program
+  .command('pipeline:runs <groupId>')
+  .description('View pipeline execution history for a group (supports index or ID)')
+  .option('-l, --limit <number>', 'Maximum runs to show', '20')
+  .action((groupId, options) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const resolvedId = resolveGroupId(groupId, db);
+    
+    if (!resolvedId) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const runs = db.prepare(`
+      SELECT * FROM pipeline_runs 
+      WHERE group_id = ?
+      ORDER BY created_at DESC 
+      LIMIT ?
+    `).all(resolvedId, Number(options.limit)) as Array<{
+      id: string;
+      group_id: string;
+      status: string;
+      started_at: number | null;
+      completed_at: number | null;
+      stages: string | null;
+      articles_count: number;
+      error: string | null;
+      created_at: number;
+    }>;
+    
+    if (runs.length === 0) {
+      logger.info('No pipeline runs found for this group');
+    } else {
+      console.table(runs.map(r => ({
+        ID: r.id,
+        'Group ID': r.group_id,
+        Status: r.status,
+        Articles: r.articles_count,
+        Started: r.started_at ? new Date(r.started_at * 1000).toLocaleString() : 'N/A',
+        Completed: r.completed_at ? new Date(r.completed_at * 1000).toLocaleString() : 'N/A',
+      })));
+    }
+    
+    dbManager.close();
+  });
+
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+program
+  .command('episode:list <groupId>')
+  .description('List generated podcast episodes for a group (supports index or ID)')
+  .option('-l, --limit <number>', 'Maximum episodes to show', '20')
+  .action((groupId, options) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const resolvedId = resolveGroupId(groupId, db);
+    
+    if (!resolvedId) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const episodes = db.prepare(`
+      SELECT * FROM episodes 
+      WHERE group_id = ? 
+      ORDER BY pub_date DESC 
+      LIMIT ?
+    `).all(resolvedId, Number(options.limit)) as Array<{
+      id: string;
+      group_id: string;
+      title: string;
+      audio_path: string | null;
+      duration_seconds: number | null;
+      pub_date: number;
+      starred: number;
+      created_at: number;
+    }>;
+    
+    if (episodes.length === 0) {
+      logger.info('No episodes found for this group');
+    } else {
+      console.table(episodes.map(e => ({
+        ID: e.id,
+        Title: e.title,
+        Duration: e.duration_seconds ? formatDuration(e.duration_seconds) : 'N/A',
+        Published: new Date(e.pub_date * 1000).toLocaleString(),
+        Starred: e.starred ? 'Yes' : 'No',
+      })));
+    }
+    
+    dbManager.close();
+  });
+
+program
   .command('trigger:status <groupId>')
   .description('Show trigger status for a group (supports index or ID)')
   .action((groupId) => {
@@ -718,6 +944,235 @@ program
     console.log(`  Unprocessed Articles: ${unprocessed}`);
     
     dbManager.close();
+  });
+
+program
+  .command('article:unprocessed <groupId>')
+  .description('List unprocessed articles for a group (supports index or ID)')
+  .option('-l, --limit <number>', 'Maximum articles to show', '50')
+  .action((groupId, options) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const resolvedId = resolveGroupId(groupId, db);
+    
+    if (!resolvedId) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const articleRepo = new ArticleRepository(db);
+    const count = articleRepo.countUnprocessed(resolvedId);
+    const articles = articleRepo.findUnprocessed(resolvedId, Number(options.limit));
+    
+    logger.info(`Total unprocessed articles: ${count}`);
+    
+    if (articles.length === 0) {
+      logger.info('No unprocessed articles found');
+    } else {
+      console.table(articles.map(a => ({
+        ID: a.id,
+        'Fever ID': a.feverId,
+        Title: a.title,
+        Source: a.sourceName || 'Unknown',
+        Published: new Date(a.publishedAt).toLocaleString(),
+      })));
+    }
+    
+    dbManager.close();
+  });
+
+program
+  .command('trigger:check <groupId>')
+  .description('Check if trigger conditions are met for a group (supports index or ID)')
+  .action(async (groupId) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const groupRepo = new GroupRepository(db);
+    
+    const resolvedId = resolveGroupId(groupId, db);
+    if (!resolvedId) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const group = groupRepo.findById(resolvedId);
+    
+    if (!group) {
+      logger.error(`Group not found: ${groupId}`);
+      dbManager.close();
+      process.exit(1);
+    }
+    
+    const articleRepo = new ArticleRepository(db);
+    const { DashScopeService } = await import('../services/llm/DashScopeService.js');
+    const llmService = new DashScopeService(config.llm);
+    const evaluator = new TriggerEvaluator(articleRepo, llmService);
+    
+    const result = await evaluator.evaluate(group);
+    console.log(JSON.stringify(result, null, 2));
+    
+    dbManager.close();
+  });
+
+program
+  .command('scheduler:start')
+  .description('Start the scheduler service')
+  .action(async () => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const groupRepo = new GroupRepository(db);
+    const articleRepo = new ArticleRepository(db);
+    const { DashScopeService } = await import('../services/llm/DashScopeService.js');
+    const llmService = new DashScopeService(config.llm);
+    const evaluator = new TriggerEvaluator(articleRepo, llmService);
+    const { EventBus } = await import('../features/events/EventBus.js');
+    const eventBus = new EventBus();
+    const { PipelineOrchestrator } = await import('../features/pipeline/PipelineOrchestrator.js');
+    const orchestrator = new PipelineOrchestrator(dbManager, {
+      maxConcurrentGroups: config.scheduler.maxConcurrentGroups,
+    });
+    
+    const scheduler = new SchedulerService(
+      groupRepo,
+      orchestrator,
+      evaluator,
+      eventBus,
+      config.scheduler,
+      config.sync,
+      dbManager,
+    );
+    
+    scheduler.start();
+    console.log(JSON.stringify({ status: 'started', timestamp: new Date().toISOString() }, null, 2));
+    
+    process.on('SIGINT', () => {
+      scheduler.stop();
+      dbManager.close();
+      process.exit(0);
+    });
+  });
+
+program
+  .command('scheduler:stop')
+  .description('Stop the scheduler service')
+  .action(async () => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const groupRepo = new GroupRepository(db);
+    const articleRepo = new ArticleRepository(db);
+    const { DashScopeService } = await import('../services/llm/DashScopeService.js');
+    const llmService = new DashScopeService(config.llm);
+    const evaluator = new TriggerEvaluator(articleRepo, llmService);
+    const { EventBus } = await import('../features/events/EventBus.js');
+    const eventBus = new EventBus();
+    const { PipelineOrchestrator } = await import('../features/pipeline/PipelineOrchestrator.js');
+    const orchestrator = new PipelineOrchestrator(dbManager, {
+      maxConcurrentGroups: config.scheduler.maxConcurrentGroups,
+    });
+    
+    const scheduler = new SchedulerService(
+      groupRepo,
+      orchestrator,
+      evaluator,
+      eventBus,
+      config.scheduler,
+      config.sync,
+      dbManager,
+    );
+    
+    scheduler.stop();
+    console.log(JSON.stringify({ status: 'stopped', timestamp: new Date().toISOString() }, null, 2));
+    
+    dbManager.close();
+  });
+
+program
+  .command('scheduler:status')
+  .description('Display scheduler configuration and enabled groups')
+  .action(() => {
+    const config = loadConfig();
+    
+    console.log('Scheduler Configuration:');
+    console.log(`  Check Interval: ${config.scheduler.checkInterval} seconds`);
+    console.log(`  Max Concurrent Groups: ${config.scheduler.maxConcurrentGroups}`);
+    
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const groups = db.prepare(`
+      SELECT id, name, trigger_type 
+      FROM groups 
+      WHERE enabled = 1 
+      ORDER BY name
+    `).all() as Array<{ id: string; name: string; trigger_type: string }>;
+    
+    console.log(`\nEnabled Groups (${groups.length}):`);
+    
+    if (groups.length === 0) {
+      logger.info('No enabled groups found');
+    } else {
+      console.table(groups.map(g => ({
+        ID: g.id,
+        Name: g.name,
+        Trigger: g.trigger_type,
+      })));
+    }
+    
+    dbManager.close();
+  });
+
+  program
+  .command('pipeline:stop <runId>')
+  .description('Stop a running pipeline by run ID')
+  .action(async (runId) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const orchestrator = new PipelineOrchestrator(dbManager, {
+      maxConcurrentGroups: config.scheduler.maxConcurrentGroups,
+    });
+    
+    logger.info(`Attempting to stop pipeline: ${runId}`);
+    
+    try {
+      const result = orchestrator.stopPipeline(runId);
+      logger.info({ 
+        runId: result.runId, 
+        groupId: result.groupId,
+        status: result.status,
+      }, 'Pipeline stopped successfully');
+      console.log(JSON.stringify({
+        success: true,
+        runId: result.runId,
+        groupId: result.groupId,
+        status: result.status,
+      }, null, 2));
+    } catch (error) {
+      logger.error({ error }, 'Failed to stop pipeline');
+      console.error(JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }, null, 2));
+      process.exit(1);
+    } finally {
+      dbManager.close();
+    }
   });
 
 program.parse();
