@@ -3,7 +3,10 @@ import { mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import pino from 'pino';
 
-const logger = pino({ name: 'database' });
+const logger = pino({
+  name: 'database',
+  timestamp: () => `,"time":"${new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00')}"`,
+});
 
 /**
  * Database schema version
@@ -149,8 +152,7 @@ export class DatabaseManager {
         article_ids TEXT NOT NULL, -- JSON array
         run_id TEXT NOT NULL,
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
-        FOREIGN KEY (source_id) REFERENCES articles(source_id)
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS idx_source_summaries_group ON source_summaries(group_id);
@@ -174,7 +176,7 @@ export class DatabaseManager {
       CREATE TABLE IF NOT EXISTS pipeline_runs (
         id TEXT PRIMARY KEY,
         group_id TEXT NOT NULL,
-        status TEXT NOT NULL, -- pending, running, completed, failed
+        status TEXT NOT NULL, -- pending, running, completed, failed, cancelled
         started_at INTEGER,
         completed_at INTEGER,
         stages TEXT, -- JSON array of stage statuses
