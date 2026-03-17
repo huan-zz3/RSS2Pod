@@ -500,36 +500,51 @@ export class PipelineOrchestrator {
    * @throws Error if the pipeline run is not found or not running
    */
   stopPipeline(runId: string): { runId: string; groupId: string; status: 'cancelled' } {
+    const db = this.dbManager.getDb();
     const run = this.activeRuns.get(runId);
     
-    if (!run) {
-      throw new Error(`Pipeline run not found: ${runId}`);
+    if (run) {
+      if (run.status !== 'running') {
+        throw new Error(`Pipeline run is not running (current status: ${run.status})`);
+      }
+      
+      this.activeRuns.delete(runId);
+      
+      this.eventBus.emit('pipeline:cancelled', {
+        runId,
+        groupId: run.groupId,
+        completedAt: new Date(),
+      }, 'PipelineOrchestrator');
+      
+      logger.info({ runId, groupId: run.groupId }, 'Pipeline cancelled by user');
+    } else {
+      const dbRun = db.prepare(`
+        SELECT id, group_id, status FROM pipeline_runs WHERE id = ?
+      `).get(runId) as { id: string; group_id: string; status: string } | undefined;
+      
+      if (!dbRun) {
+        throw new Error(`Pipeline run not found: ${runId}`);
+      }
+      
+      if (dbRun.status !== 'running') {
+        throw new Error(`Pipeline run is not running (current status: ${dbRun.status})`);
+      }
+      
+      logger.warn({ runId, groupId: dbRun.group_id }, 'Cancelling stuck pipeline run');
     }
     
-    if (run.status !== 'running') {
-      throw new Error(`Pipeline run is not running (current status: ${run.status})`);
-    }
-    
-    this.activeRuns.delete(runId);
-    
-    const db = this.dbManager.getDb();
     db.prepare(`
       UPDATE pipeline_runs 
       SET status = ?, completed_at = ?
       WHERE id = ?
     `).run('cancelled', new Date().getTime() / 1000, runId);
     
-    this.eventBus.emit('pipeline:cancelled', {
-      runId,
-      groupId: run.groupId,
-      completedAt: new Date(),
-    }, 'PipelineOrchestrator');
-    
-    logger.info({ runId, groupId: run.groupId }, 'Pipeline cancelled by user');
+    const dbRun = db.prepare('SELECT group_id FROM pipeline_runs WHERE id = ?').get(runId) as { group_id: string } | undefined;
+    const groupId = run?.groupId || dbRun?.group_id || 'unknown';
     
     return {
       runId,
-      groupId: run.groupId,
+      groupId,
       status: 'cancelled',
     };
   }
