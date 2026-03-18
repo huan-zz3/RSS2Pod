@@ -48,6 +48,82 @@ npm run cli -- status
 
 # 列出所有订阅源
 npm run cli -- source:list
+```
+
+### API 服务器
+
+```bash
+# 启动 API 服务器（默认端口 3000）
+npm run api
+
+# 查看帮助
+npm run api -- --help
+
+# 指定端口启动
+npm run api -- --port 3001
+
+# 或使用环境变量
+PORT=3001 npm run api
+```
+
+**API 端点**（启动后访问）：
+- 健康检查：`http://localhost:3000/api/health`
+- 获取播客 Feed：`http://localhost:3000/api/feeds/<groupId>`
+- 列出所有组：`http://localhost:3000/api/groups`
+- 查看组详情：`http://localhost:3000/api/groups/<groupId>`
+- 媒体文件：`http://localhost:3000/api/media/<文件路径>`
+
+**端口冲突解决**：
+如果看到 `EADDRINUSE` 错误，说明端口已被占用：
+```bash
+# 方法 1：停止现有进程
+lsof -i :3000 | grep LISTEN | awk '{print $2}' | xargs kill
+
+# 方法 2：使用其他端口
+npm run api -- --port 3001
+
+# 方法 3：设置环境变量
+PORT=3001 npm run api
+```
+
+### 🎧 订阅播客
+
+**获取你的 Feed URL**：
+
+```bash
+# 1. 查看组列表获取组 ID
+npm run cli -- group:list
+
+# 2. Feed URL 格式
+# http://<你的服务器地址>:3000/api/feeds/<组 ID>
+
+# 示例：
+# 本地测试：http://localhost:3000/api/feeds/grp-xxx
+# 生产环境：https://podcast.yourdomain.com/api/feeds/grp-xxx
+```
+
+**在 iTunes/Apple Podcasts 中订阅**：
+
+1. 确保 API 服务器正在运行：`npm run api`
+2. 获取你的组 ID（见上）
+3. 打开 Apple Podcasts 或任意播客应用
+4. 选择"通过 URL 订阅"或"添加播客"
+5. 输入 Feed URL：`http://localhost:3000/api/feeds/<groupId>`
+
+**重要说明**：
+- 🌐 **公开访问**：iTunes 需要公开可访问的 URL，本地 `localhost` 无法使用
+  - 方案 1：使用内网穿透工具（如 ngrok）
+  - 方案 2：部署到有公网 IP 的服务器
+  - 方案 3：在局域网内使用机器 IP 地址（如 `http://192.168.1.100:3000/api/feeds/grp-xxx`）
+- ⚙️ **配置 baseUrl**：编辑 `config.json` 中的 `api.baseUrl` 为实际可访问地址
+  ```json
+  {
+    "api": {
+      "baseUrl": "http://localhost:3000"  // 本地测试
+      // 或 "baseUrl": "https://podcast.example.com"  // 生产环境
+    }
+  }
+  ```
 
 # 创建组
 npm run cli -- group:create "科技新闻" -s "1,2,3"
@@ -111,7 +187,7 @@ Commands:
   fever:test                               Test Fever API connection
   fever:sync-feeds                         Sync feed list
   fever:cache-articles [options]           Cache articles to local database
-  sync:run [groupId]                       Manually trigger article sync (optionally for specific group)
+  sync:run [groupId]                       手动触发文章同步（增量同步，基于 last_synced_max_id）
   sync:status                              Show sync service status and configuration
   llm:test                                 Test LLM connection
   llm:chat <prompt>                        Chat with LLM for testing
@@ -127,6 +203,7 @@ Commands:
   scheduler:stop                           Stop the scheduler service
   scheduler:status                         Display scheduler configuration and enabled groups
   pipeline:stop <runId>                    Stop a running pipeline by run ID
+  feed:regenerate [groupId]                Regenerate RSS feed XML with current baseUrl (supports index or ID)
   help [command]                           display help for command
 ```
 
@@ -185,7 +262,7 @@ npm run cli -- fever:cache-articles -l 100  # 缓存文章
 
 ### 同步服务
 ```bash
-npm run cli -- sync:run [groupId]      # 手动触发文章同步（可选指定组）
+npm run cli -- sync:run [groupId]      # 手动触发文章同步（增量同步，避免重复获取）
 npm run cli -- sync:status             # 显示同步服务状态和配置
 ```
 
@@ -210,6 +287,7 @@ npm run cli -- pipeline:stop <runId>            # 停止正在运行的流水线
 npm run cli -- episode:list <groupId>           # 列出播客节目
 npm run cli -- article:unprocessed <groupId>    # 查看未处理文章
 npm run cli -- trigger:check <groupId>          # 手动检查触发条件
+npm run cli -- feed:regenerate [groupId]        # 重新生成 RSS Feed XML（使用当前 baseUrl）
 ```
 
 ### 调度器
@@ -217,6 +295,40 @@ npm run cli -- trigger:check <groupId>          # 手动检查触发条件
 npm run cli -- scheduler:start            # 启动调度器服务
 npm run cli -- scheduler:stop             # 停止调度器服务
 npm run cli -- scheduler:status           # 显示调度器配置和启用的组
+```
+
+### Feed 管理
+```bash
+npm run cli -- feed:regenerate            # 重新生成所有组的 RSS Feed XML（使用当前 baseUrl）
+npm run cli -- feed:regenerate <groupId>  # 重新生成指定组的 RSS Feed XML（支持索引或 ID）
+```
+
+**使用场景**：
+- 修改了 `config.json` 中的 `api.baseUrl` 后，重新生成所有 Feed 文件
+- 修复音频文件路径问题
+- 批量更新所有播客订阅源的 URL
+
+**示例**：
+```bash
+# 修改 baseUrl
+npm run cli -- config:set api.baseUrl https://podcast.example.com
+
+# 重新生成所有组的 Feed
+npm run cli -- feed:regenerate
+
+# 或者只重新生成特定组
+npm run cli -- feed:regenerate grp-xxx
+npm run cli -- feed:regenerate 0          # 使用索引（第 1 个组）
+```
+
+### 查看命令帮助
+```bash
+# 查看所有可用命令
+npm run cli -- -h
+
+# 查看特定命令的帮助
+npm run cli -- feed:regenerate -h
+npm run cli -- group:create -h
 ```
 
 ## 项目结构
@@ -323,6 +435,36 @@ npm run cli -- group:edit <groupId> -t mixed --threshold 5 --cron "0 */6 * * *"
 5. **音频** - 合成音频（TTS）
 6. **节目** - 保存节目
 7. **订阅源** - 更新播客 RSS 订阅源
+
+## 同步服务
+
+### 增量同步
+
+SyncService 使用 `groups.last_synced_max_id` 字段实现增量同步：
+
+**工作原理**：
+1. 每次同步后保存 `maxId` 到数据库
+2. 下次同步时使用 `sinceId` 参数只获取新文章
+3. 已存在的文章不会被重复处理
+
+**效果**：
+```bash
+# 第一次运行（获取所有文章）
+✅ Sync completed: 10 articles in 1396ms (maxId: 129531)
+Group grp-xxx: 10 new, 0 updated
+
+# 第二次运行（只获取新文章）
+✅ Sync completed: 0 articles in 1055ms (maxId: 129531)
+Group grp-xxx: 0 new, 0 updated  ← 不再重复！
+```
+
+**数据库迁移**：Schema v2 添加了 `last_synced_max_id` 字段（默认 0）
+
+```sql
+ALTER TABLE groups ADD COLUMN last_synced_max_id INTEGER DEFAULT 0;
+```
+
+---
 
 ## 触发器机制
 

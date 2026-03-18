@@ -7,7 +7,7 @@
 
 ## Overview
 
-RSS 转播客转换器，具备 AI 驱动的内容增强功能。6 阶段流水线：源摘要 → 组聚合 → 脚本 → 音频 → 节目 → Feed。SyncService 独立同步文章（600s 间隔）。支持三种触发器（时间/数量/LLM）和混合触发模式。
+RSS 转播客转换器，具备 AI 驱动的内容增强功能。6 阶段流水线：源摘要 → 组聚合 → 脚本 → 音频 → 节目 → Feed。SyncService 独立同步文章（600s 间隔），支持增量同步（基于 `last_synced_max_id`）。支持三种触发器（时间/数量/LLM）和混合触发模式。
 
 ## Project Structure
 
@@ -33,7 +33,7 @@ RSS2Pod/
 |------|------|------|
 | 运行 CLI 命令 | `src/cli/index.ts` | 24 个命令：init, db:init, group:*, pipeline:run, trigger:*, scheduler:*, sync:* |
 | 修改流水线阶段 | `src/features/pipeline/PipelineOrchestrator.ts` | 6 阶段，LLM/TTS 集成，事件发射 |
-| 添加同步功能 | `src/features/sync/` | SyncService，独立文章同步（600s 间隔） |
+| 添加同步功能 | `src/features/sync/` | SyncService，独立文章同步（600s 间隔），增量同步（基于 `last_synced_max_id`） |
 | 添加调度器功能 | `src/features/scheduler/` | 触发器评估、定时检查、自动执行 |
 | 添加外部 API 客户端 | `src/infrastructure/external/` | 遵循 FeverClient 模式 |
 | 添加新服务 | `src/services/` | LLM, TTS, Feed 生成器 |
@@ -48,7 +48,7 @@ RSS2Pod/
 | 符号 | 类型 | 位置 | 作用 |
 |------|------|------|------|
 | `PipelineOrchestrator` | 类 | `src/features/pipeline/` | 6 阶段流水线执行 |
-| `SyncService` | 类 | `src/features/sync/` | 独立同步服务，600s 间隔从 Fever API 获取文章 |
+| `SyncService` | 类 | `src/features/sync/` | 独立同步服务，600s 间隔从 Fever API 获取文章，增量同步（`last_synced_max_id` 持久化） |
 | `EventBus` | 类 | `src/features/events/` | 事件驱动通信 |
 | `SchedulerService` | 类 | `src/features/scheduler/` | 调度器主服务，每分钟检查触发器 |
 | `TriggerEvaluator` | 类 | `src/features/scheduler/` | 触发器工厂和评估器 |
@@ -128,6 +128,8 @@ npm run lint             # ESLint 检查
 - **Scheduler 自动启动** - `npm run dev` 时调度器自动启动，每分钟检查触发器
 - **node-cron 依赖** - 时间触发器使用 node-cron v4.x，时区 Asia/Shanghai
 - **严格 TypeScript** - `noUncheckedIndexedAccess: true`，数组访问需检查 undefined
+- **增量同步** - `groups.last_synced_max_id` 字段追踪同步进度，避免重复获取
+- **数据库迁移** - Schema v2 添加 `last_synced_max_id` 字段（默认 0）
 
 ## 模块级 AGENTS.md
 

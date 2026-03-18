@@ -28,6 +28,11 @@ export async function createApiServer(options: ApiOptions = {}) {
     logger: {
       level: config.logging.level,
     },
+    // VPN 环境优化：增加超时配置，避免连接提前关闭
+    keepAliveTimeout: 60 * 1000,      // 60 秒 keep-alive（默认 5 秒）
+    connectionTimeout: 60 * 1000,     // 60 秒连接超时
+    bodyLimit: 10 * 1024 * 1024,      // 10MB 响应体限制（默认 1MB）
+    maxRequestsPerSocket: 0,          // 无限制
   });
 
   await fastify.register(cors, {
@@ -76,61 +81,98 @@ export async function createApiServer(options: ApiOptions = {}) {
   });
 
   fastify.get('/api/feeds/:groupId', async (request, reply) => {
-    const { groupId } = request.params as { groupId: string };
-    
-    const group = groupRepo.findById(groupId);
-    if (!group) {
-      return reply.code(404).send({ error: 'Group not found' });
+    try {
+      const { groupId } = request.params as { groupId: string };
+      
+      const group = groupRepo.findById(groupId);
+      if (!group) {
+        return reply.code(404).send({ error: 'Group not found' });
+      }
+
+      const baseUrl = config.api.baseUrl;
+      
+      const db = dbManager.getDb();
+      const episodes = db.prepare(`
+        SELECT * FROM episodes 
+        WHERE group_id = ? 
+        ORDER BY pub_date DESC 
+        LIMIT 10
+      `).all(groupId) as Array<{
+        id: string;
+        title: string;
+        script: string;
+        audio_path?: string;
+        pub_date: string;
+        guid: string;
+      }>;
+
+      logger.info({ groupId, episodeCount: episodes.length }, 'Fetching episodes for feed');
+
+      const feedItems = episodes
+        .filter(ep => ep.audio_path)
+        .map(ep => {
+          // Convert absolute path to relative path for media URL
+          const relativePath = ep.audio_path!.startsWith('/') 
+            ? ep.audio_path!.replace(/^.*?data\/media\//, '')
+            : ep.audio_path;
+          
+          try {
+            const scriptData = JSON.parse(ep.script);
+            return {
+              title: ep.title,
+              description: scriptData.segments?.[0]?.text || ep.title,
+              enclosure: {
+                url: `${baseUrl}/api/media/${relativePath}`,
+                length: 0,
+                type: 'audio/mpeg',
+              },
+              pubDate: new Date(ep.pub_date).toISOString(),
+              guid: ep.guid,
+            };
+          } catch (parseError) {
+            logger.warn({ episodeId: ep.id, error: parseError }, 'Failed to parse script, using title as description');
+            return {
+              title: ep.title,
+              description: ep.title,
+              enclosure: {
+                url: `${baseUrl}/api/media/${relativePath}`,
+                length: 0,
+                type: 'audio/mpeg',
+              },
+              pubDate: new Date(ep.pub_date).toISOString(),
+              guid: ep.guid,
+            };
+          }
+        });
+
+      logger.info({ groupId, filteredEpisodeCount: feedItems.length }, 'Filtered episodes with audio');
+
+      const feedConfig = {
+        groupId,
+        title: group.name,
+        description: group.description || `${group.name} Podcast`,
+        imageUrl: '',
+        siteUrl: `${baseUrl}/api/feeds/${groupId}`,
+        author: group.name,
+        itunesAuthor: group.name,
+        itunesExplicit: 'no' as const,
+        language: 'en',
+        categories: ['News'],
+      };
+
+      logger.info({ feedConfig }, 'Generating feed');
+      const feedXml = feedGenerator.generateFeed(feedItems, feedConfig);
+      
+      // 显式设置 Content-Length，避免 VPN/代理对 Chunked Transfer Encoding 的处理问题
+      const contentLength = Buffer.byteLength(feedXml, 'utf8');
+      logger.info({ contentLength, remoteAddress: request.ip }, 'Sending feed response');
+      reply.header('Content-Length', contentLength);
+      reply.type('application/rss+xml; charset=utf-8');
+      return feedXml;
+    } catch (error) {
+      logger.error({ error, message: error instanceof Error ? error.message : 'Unknown error' }, 'Failed to generate feed');
+      throw error;
     }
-
-    const baseUrl = config.api.baseUrl;
-    
-    const db = dbManager.getDb();
-    const episodes = db.prepare(`
-      SELECT * FROM episodes 
-      WHERE group_id = ? 
-      ORDER BY pub_date DESC 
-      LIMIT 10
-    `).all(groupId) as Array<{
-      id: string;
-      title: string;
-      script: string;
-      audio_path?: string;
-      pub_date: number;
-      guid: string;
-    }>;
-
-    const feedItems = episodes
-      .filter(ep => ep.audio_path)
-      .map(ep => ({
-        title: ep.title,
-        description: JSON.parse(ep.script).segments?.[0]?.text || ep.title,
-        enclosure: {
-          url: `${baseUrl}/api/media/${ep.audio_path}`,
-          length: 0,
-          type: 'audio/mpeg',
-        },
-        pubDate: new Date(ep.pub_date * 1000).toISOString(),
-        guid: ep.guid,
-      }));
-
-    const feedConfig = {
-      groupId,
-      title: group.name,
-      description: group.description || `${group.name} Podcast`,
-      imageUrl: '',
-      siteUrl: `${baseUrl}/api/feeds/${groupId}`,
-      author: group.name,
-      itunesAuthor: group.name,
-      itunesExplicit: 'no' as const,
-      language: 'en',
-      categories: ['News'],
-    };
-
-    const feedXml = feedGenerator.generateFeed(feedItems, feedConfig);
-    
-    reply.type('application/rss+xml');
-    return feedXml;
   });
 
   fastify.post('/api/groups/:id/generate', async (request, reply) => {
@@ -169,8 +211,15 @@ export async function createApiServer(options: ApiOptions = {}) {
   });
 
   fastify.setErrorHandler((error, _request, reply) => {
-    logger.error({ error }, 'API error');
-    reply.code(500).send({ error: 'Internal server error' });
+    logger.error({ 
+      error,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    }, 'API error');
+    reply.code(500).send({ 
+      error: 'Internal server error',
+      message: process.env.NODE_ENV === 'development' && error instanceof Error ? error.message : undefined
+    });
   });
 
   return {
@@ -194,10 +243,75 @@ export async function createApiServer(options: ApiOptions = {}) {
 
 // Auto-start when executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  createApiServer().then(async (server) => {
+  // Handle command-line arguments
+  const args = process.argv.slice(2);
+  
+  if (args.includes('-h') || args.includes('--help')) {
+    console.log(`
+RSS2Pod API Server
+
+Usage: npm run api [options]
+
+Options:
+  -h, --help     Show this help message
+  --port <num>   Specify port number (default: 3000)
+  --host <host>  Specify host (default: 0.0.0.0)
+
+Environment Variables:
+  PORT           Override default port
+  HOST           Override default host
+
+Examples:
+  npm run api                      # Start with default settings
+  npm run api -- --port 3001       # Start on port 3001
+  PORT=3001 npm run api            # Use environment variable
+
+After starting:
+  - Health check: curl http://localhost:3000/api/health
+  - Get feed:     curl http://localhost:3000/api/feeds/<groupId>
+  - List groups:  curl http://localhost:3000/api/groups
+`);
+    process.exit(0);
+  }
+  
+  const portArg = args.find((arg, i) => 
+    (arg === '--port' || arg === '-p') && args[i + 1]
+  );
+  const port: number | undefined = portArg 
+    ? parseInt(args[args.indexOf(portArg) + 1]!, 10) 
+    : process.env.PORT 
+      ? parseInt(process.env.PORT, 10) 
+      : undefined;
+  
+  const hostArg = args.find((arg, i) => 
+    (arg === '--host' || arg === '-H') && args[i + 1]
+  );
+  const host: string | undefined = hostArg 
+    ? args[args.indexOf(hostArg) + 1]!
+    : process.env.HOST ?? undefined;
+
+  createApiServer({ host, port }).then(async (server) => {
     await server.start();
+    
+    const shutdown = async (signal: string) => {
+      logger.info({ signal }, 'Received shutdown signal, closing server...');
+      await server.close();
+      logger.info('Server shut down complete');
+      process.exit(0);
+    };
+    
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGBREAK', () => shutdown('SIGBREAK'));
   }).catch((error) => {
-    logger.error({ error }, 'Failed to start API server');
+    if (error.code === 'EADDRINUSE') {
+      logger.error(`Port ${error.port} is already in use. Try one of these:`);
+      logger.error(`  1. Stop the existing process: lsof -i :${error.port} | grep LISTEN | awk '{print $2}' | xargs kill`);
+      logger.error(`  2. Use a different port: npm run api -- --port ${error.port + 1}`);
+      logger.error(`  3. Set PORT env variable: PORT=${error.port + 1} npm run api`);
+    } else {
+      logger.error({ error }, 'Failed to start API server');
+    }
     process.exit(1);
   });
 }

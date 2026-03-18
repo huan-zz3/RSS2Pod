@@ -1225,4 +1225,239 @@ program
     }
   });
 
+program
+  .command('feed:regenerate [groupId]')
+  .description('Regenerate RSS feed XML with current baseUrl (supports index or ID)')
+  .action(async (groupId) => {
+    const config = loadConfig();
+    const dbManager = new DatabaseManager(config.database.path);
+    dbManager.initialize();
+    
+    const db = dbManager.getDb();
+    const groupRepo = new GroupRepository(db);
+    const { PodcastFeedGenerator } = await import('../services/feed/PodcastFeedGenerator.js');
+    const feedGenerator = new PodcastFeedGenerator();
+    
+    try {
+      if (groupId) {
+        // Regenerate for specific group
+        const resolvedId = resolveGroupId(groupId, db);
+        
+        if (!resolvedId) {
+          logger.error(`Group not found: ${groupId}`);
+          dbManager.close();
+          process.exit(1);
+        }
+        
+        const group = groupRepo.findById(resolvedId);
+        if (!group) {
+          logger.error(`Group not found: ${groupId}`);
+          dbManager.close();
+          process.exit(1);
+        }
+        
+        // Get episodes for this group
+        const episodes = db.prepare(`
+          SELECT * FROM episodes 
+          WHERE group_id = ? 
+          ORDER BY pub_date DESC 
+          LIMIT 10
+        `).all(resolvedId) as Array<{
+          id: string;
+          title: string;
+          script: string;
+          audio_path: string;
+          duration_seconds: number;
+          guid: string;
+          pub_date: string;
+        }>;
+        
+        if (episodes.length === 0) {
+          logger.warn(`No episodes found for group: ${group.name}`);
+          dbManager.close();
+          return;
+        }
+        
+        // Build feed items
+        const feedItems = episodes
+          .filter(ep => ep.audio_path)
+          .map(ep => {
+            const scriptContent = ep.script ? JSON.parse(ep.script) : null;
+            const relativePath = ep.audio_path.replace(/^.*[/\\]data[/\\]media[/\\]/, '');
+            
+            return {
+              title: ep.title || `${group.name} - ${new Date(ep.pub_date).toLocaleDateString()}`,
+              description: scriptContent?.summary || 'Generated episode',
+              enclosure: {
+                url: `${config.api.baseUrl}/api/media/${relativePath}`,
+                length: 0,
+                type: 'audio/mpeg',
+              },
+              pubDate: ep.pub_date,
+              guid: ep.guid,
+            };
+          });
+        
+        if (feedItems.length === 0) {
+          logger.warn(`No episodes with audio found for group: ${group.name}`);
+          dbManager.close();
+          return;
+        }
+        
+        // Generate feed
+        const feedConfig = {
+          groupId: resolvedId,
+          title: group.name,
+          description: group.description || 'Generated podcast feed',
+          imageUrl: undefined,
+          siteUrl: config.api.baseUrl,
+          author: 'RSS2Pod',
+          itunesAuthor: 'RSS2Pod',
+          itunesExplicit: 'no' as const,
+          itunesOwnerName: 'RSS2Pod',
+          itunesOwnerEmail: 'noreply@localhost',
+          itunesCategory: 'Technology',
+          language: 'en',
+        };
+        
+        feedGenerator.generateFeed(feedItems, feedConfig);
+        logger.info({ 
+          groupId: resolvedId, 
+          groupName: group.name,
+          episodeCount: feedItems.length,
+          baseUrl: config.api.baseUrl,
+        }, 'Feed regenerated successfully');
+        
+        console.log(JSON.stringify({
+          success: true,
+          groupId: resolvedId,
+          groupName: group.name,
+          episodes: feedItems.length,
+          baseUrl: config.api.baseUrl,
+          feedPath: `data/media/feeds/${resolvedId}.xml`,
+        }, null, 2));
+        
+      } else {
+        // Regenerate for all groups
+        const groups = groupRepo.findAll();
+        
+        if (groups.length === 0) {
+          logger.info('No groups found');
+          dbManager.close();
+          return;
+        }
+        
+        let successCount = 0;
+        let skipCount = 0;
+        
+        for (const group of groups) {
+          try {
+            // Get episodes for this group
+            const episodes = db.prepare(`
+              SELECT * FROM episodes 
+              WHERE group_id = ? 
+              ORDER BY pub_date DESC 
+              LIMIT 10
+            `).all(group.id) as Array<{
+              id: string;
+              title: string;
+              script: string;
+              audio_path: string;
+              duration_seconds: number;
+              guid: string;
+              pub_date: string;
+            }>;
+            
+            if (episodes.length === 0) {
+              logger.warn({ groupId: group.id }, 'No episodes found, skipping');
+              skipCount++;
+              continue;
+            }
+            
+            // Build feed items
+            const feedItems = episodes
+              .filter(ep => ep.audio_path)
+              .map(ep => {
+                const scriptContent = ep.script ? JSON.parse(ep.script) : null;
+                const relativePath = ep.audio_path.replace(/^.*[/\\]data[/\\]media[/\\]/, '');
+                
+                return {
+                  title: ep.title || `${group.name} - ${new Date(ep.pub_date).toLocaleDateString()}`,
+                  description: scriptContent?.summary || 'Generated episode',
+                  enclosure: {
+                    url: `${config.api.baseUrl}/api/media/${relativePath}`,
+                    length: 0,
+                    type: 'audio/mpeg',
+                  },
+                  pubDate: ep.pub_date,
+                  guid: ep.guid,
+                };
+              });
+            
+            if (feedItems.length === 0) {
+              logger.warn({ groupId: group.id }, 'No episodes with audio found, skipping');
+              skipCount++;
+              continue;
+            }
+            
+            // Generate feed
+            const feedConfig = {
+              groupId: group.id,
+              title: group.name,
+              description: group.description || 'Generated podcast feed',
+              imageUrl: undefined,
+              siteUrl: config.api.baseUrl,
+              author: 'RSS2Pod',
+              itunesAuthor: 'RSS2Pod',
+              itunesExplicit: 'no' as const,
+              itunesOwnerName: 'RSS2Pod',
+              itunesOwnerEmail: 'noreply@localhost',
+              itunesCategory: 'Technology',
+              language: 'en',
+            };
+            
+            feedGenerator.generateFeed(feedItems, feedConfig);
+            logger.info({ 
+              groupId: group.id, 
+              groupName: group.name,
+              episodeCount: feedItems.length,
+            }, 'Feed regenerated');
+            
+            successCount++;
+            
+          } catch (error) {
+            logger.error({ 
+              groupId: group.id, 
+              error: error instanceof Error ? error.message : String(error)
+            }, 'Failed to regenerate feed');
+          }
+        }
+        
+        logger.info({ 
+          total: groups.length, 
+          success: successCount, 
+          skipped: skipCount,
+          baseUrl: config.api.baseUrl,
+        }, 'All feeds regenerated');
+        
+        console.log(JSON.stringify({
+          success: true,
+          totalGroups: groups.length,
+          regenerated: successCount,
+          skipped: skipCount,
+          baseUrl: config.api.baseUrl,
+        }, null, 2));
+      }
+    } catch (error) {
+      logger.error({ error }, 'Failed to regenerate feeds');
+      console.error(JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }, null, 2));
+      process.exit(1);
+    } finally {
+      dbManager.close();
+    }
+  });
+
 program.parse();
